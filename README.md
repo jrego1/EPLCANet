@@ -1,7 +1,7 @@
+This repository contains code to train an hybrid sparse coding, CNN (LCANet) using Equilibrium Propagation.
 
 # PyTorch Implementation of the LCA Sparse Coding Algorithm
 https://github.com/lanl/lca-pytorch
-TODO description. 
 
 # Scaling Equilibrium Propagation to Deep ConvNets by Drastically Reducing its Gradient Estimator Bias
 
