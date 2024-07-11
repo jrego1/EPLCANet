@@ -1,0 +1,1 @@
+python3 main.py --model CNN --task MNIST --alg EP --channels 32 32 64 --kernels 5 5 5 --paddings 0 0 0 --strides 1 1 1 --optim adam --lrs 5e-5 1e-4 1e-5 8e-6 --pools imm --epochs 20 --act mysig --todo train --betas 0.0 0.1 --T1 30 --T2 10 --mbs 50 --device 3 --save --softmax --loss cel --seed 2 --thirdphase
