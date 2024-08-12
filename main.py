@@ -76,6 +76,7 @@ parser.add_argument('--eta',type = float, default = 0.001, metavar = 'eta', help
 parser.add_argument('--lca_stride',type = int, default = 1, metavar = 'ds', help='LCA stride.')
 parser.add_argument('--lca_ksize',type = int, default = 7, metavar = 'dk', help='LCA kernel size.') # Does this need to be the same as kernels in CNN?
 parser.add_argument('--lca_iters',type = int, default = 600, metavar = 'di', help='LCA iterations.')
+parser.add_argument('--dict_loss',type = str, default = 'recon', metavar = 'dl', help='Dictionary update loss.')
 
 args = parser.parse_args()
 command_line = ' '.join(sys.argv)
@@ -86,7 +87,10 @@ print('\n')
 print('##################################################################')
 print('\nargs\tmbs\tT1\tT2\tepochs\tactivation\tbetas')
 print('\t',args.mbs,'\t',args.T1,'\t',args.T2,'\t',args.epochs,'\t',args.act, '\t', args.betas)
-print('\n')
+if args.model == 'EPLCACNN': 
+    print('\n\tn_feats\tlca_lambda\ttau\teta\tlca_stride\tlca_ksize\tlca_iters')
+    print('\t', args.n_feats, '\t', args.lca_lambda, '\t', args.tau, '\t', args.eta, '\t', args.lca_stride, '\t', args.lca_ksize, '\t', args.lca_iters)
+    print('\tdict_loss:', args.dict_loss)
 
 device = torch.device('cuda:'+str(args.device) if torch.cuda.is_available() else 'cpu')
 
@@ -195,100 +199,83 @@ elif args.loss=='cel':
     criterion = torch.nn.CrossEntropyLoss(reduction='none').to(device)
 print('loss =', criterion, '\n')
 
-
-
 if args.load_path=='':
-
-    if args.model=='MLP':
-        model = P_MLP(args.archi, activation=activation)
-
-    elif args.model=='VFMLP':
-        model = VF_MLP(args.archi, activation=activation)
-
-    elif args.model.find('CNN')!=-1:
-
-        if args.task=='MNIST':
-            pools = make_pools(args.pools)
-            unpools = make_unpools(args.pools)
-            if args.model=='CNN':
-                channels = [1]+args.channels 
-                model = P_CNN(28, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings, 
-                                  activation=activation, softmax=args.softmax)
-            elif args.model=='VFCNN':
-                channels = [1]+args.channels 
-                model = VF_CNN(28, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings,
-                                   activation=activation, softmax=args.softmax, same_update=args.same_update)
-            elif args.model=='EPLCACNN':
-                channels = args.channels 
-                
-                # Add LCA Layer in front of model
-                lca = LCAConv2D(
-                    args.channels[0],
-                    1, 
-                    f'/storage/jr3548@drexel.edu/eplcanet/results/{args.task}/eplcanet',
-                    args.kernels[0],
-                    args.strides[0], 
-                    args.lca_lambda,
-                    args.tau, 
-                    args.eta,
-                    args.lca_iters,
-                    pad='valid',
-                    return_vars=['acts', 'recon_errors'],
-                    input_zero_mean=True,
-                    input_unit_var=True,
-                    nonneg=True,
-                    req_grad=True,
-                    weight_init=(torch.nn.init.kaiming_uniform_,{})
-                    )
-                
-                model = EPLCANet(28, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings, 
-                                  activation=activation, softmax=args.softmax, lca=lca)
-                
-
-        elif args.task=='CIFAR10':    
-            pools = make_pools(args.pools)
-            unpools = make_unpools(args.pools)
-            #channels = [3]+args.channels
-            channels = [args.n_feats]+args.channels 
-            if args.model=='CNN':
-                model = P_CNN(32, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings,
-                              activation=activation, softmax=args.softmax)
-            elif args.model=='VFCNN':
-                model = VF_CNN(32, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings,
-                              activation=activation, softmax = args.softmax, same_update=args.same_update)
+    if args.task=='MNIST':
+        pools = make_pools(args.pools)
+        unpools = make_unpools(args.pools)
+        if args.model=='CNN':
+            channels = [1]+args.channels 
+            model = P_CNN(28, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings, 
+                                activation=activation, softmax=args.softmax)
+        elif args.model=='EPLCACNN':
+            channels = args.channels 
             
-            elif args.model=='EPLCACNN':
-                channels = args.channels 
-                
-                # Add LCA Layer in front of model
-                lca = LCAConv2D(
-                    args.channels[0],
-                    3, 
-                    f'/storage/jr3548@drexel.edu/eplcanet/results/{args.task}/eplcanet',
-                    args.kernels[0],
-                    args.strides[0], 
-                    args.lca_lambda,
-                    args.tau, 
-                    args.eta,
-                    args.lca_iters,
-                    pad='valid',
-                    return_vars=['acts', 'recon_errors'],
-                    input_zero_mean=True,
-                    input_unit_var=True,
-                    nonneg=True,
-                    req_grad=True,
-                    weight_init=(torch.nn.init.kaiming_uniform_,{})
-                    )
-                
-                model = EPLCANet(32, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings, 
-                                  activation=activation, softmax=args.softmax, lca=lca)
-                 
-        elif args.task=='imagenet':   #only for gducheck
-            pools = make_pools(args.pools)
-            unpools = make_unpools(args.pools)
-            channels = [3]+args.channels 
-            model = P_CNN(224, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings, 
+            # Add LCA Layer in front of model
+            lca = LCAConv2D(
+                args.channels[0],
+                1, 
+                f'/storage/jr3548@drexel.edu/eplcanet/results/{args.task}/eplcanet',
+                args.kernels[0],
+                args.strides[0], 
+                args.lca_lambda,
+                args.tau, 
+                args.eta,
+                args.lca_iters,
+                pad='valid',
+                return_vars=['acts', 'recon_errors', 'states'],
+                input_zero_mean=True,
+                input_unit_var=True,
+                nonneg=True,
+                req_grad=True,
+                weight_init=(torch.nn.init.kaiming_uniform_,{})
+                )
+            
+            model = EPLCANet(28, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings, 
+                                activation=activation, softmax=args.softmax, lca=lca)
+            
+
+    elif args.task=='CIFAR10':    
+        pools = make_pools(args.pools)
+        unpools = make_unpools(args.pools)
+        #channels = [3]+args.channels
+        channels = [args.n_feats]+args.channels 
+        if args.model=='CNN':
+            model = P_CNN(32, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings,
                             activation=activation, softmax=args.softmax)
+        
+        elif args.model=='EPLCACNN':
+            channels = args.channels 
+            
+            # Add LCA Layer in front of model
+            lca = LCAConv2D(
+                args.channels[0],
+                3, 
+                f'/storage/jr3548@drexel.edu/eplcanet/results/{args.task}/eplcanet',
+                args.kernels[0],
+                args.strides[0], 
+                args.lca_lambda,
+                args.tau, 
+                args.eta,
+                args.lca_iters,
+                pad='valid',
+                return_vars=['acts', 'recon_errors', 'states'],
+                input_zero_mean=True,
+                input_unit_var=True,
+                nonneg=True,
+                req_grad=True,
+                weight_init=(torch.nn.init.kaiming_uniform_,{})
+                )
+            
+            print('return lca main: ', lca.return_vars)
+            model = EPLCANet(32, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings, 
+                                activation=activation, softmax=args.softmax, lca=lca)
+                
+    elif args.task=='imagenet':   #only for gducheck
+        pools = make_pools(args.pools)
+        unpools = make_unpools(args.pools)
+        channels = [3]+args.channels 
+        model = P_CNN(224, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings, 
+                        activation=activation, softmax=args.softmax)
                        
         print('\n')
         #print('Poolings =', model.pools)
@@ -359,7 +346,7 @@ if args.todo=='train':
         createHyperparametersFile(path, args, model, command_line)
 
     
-    train(model, optimizer, train_loader, test_loader, args.T1, args.T2, betas, device, args.epochs, criterion, alg=args.alg, 
+    train(model, optimizer, train_loader, test_loader, args.T1, args.T2, betas, device, args.epochs, criterion, alg=args.alg, dict_loss=args.dict_loss,
                  random_sign=args.random_sign, check_thm=args.check_thm, save=args.save, path=path, checkpoint=checkpoint, 
                  thirdphase=args.thirdphase, scheduler=scheduler, cep_debug=args.cep_debug)
 

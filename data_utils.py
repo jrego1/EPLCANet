@@ -214,6 +214,17 @@ def plot_acc(train_acc, test_acc, path):
     fig.savefig(path + '/train-test_acc.png')
     plt.close()
  
+def plot_err(train_err, test_err, path, error_type = ''):
+    fig = plt.figure(figsize=(16,9))
+    x_axis = [i for i in range(len(train_err))]
+    plt.plot(x_axis, train_err, label='train')
+    plt.plot(x_axis, test_err, label='test')
+    plt.xlabel('Epochs')
+    plt.ylabel(f'{error_type} Error')
+    plt.legend()
+    plt.grid()
+    fig.savefig(path + f'/train-test_err{error_type}.png')
+    plt.close()
 
 
 def createHyperparametersFile(path, args, model, command_line):
