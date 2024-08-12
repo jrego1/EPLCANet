@@ -367,10 +367,11 @@ class P_CNN(torch.nn.Module):
         delta_phi = (phi_2 - phi_1)/(beta_1 - beta_2)        
         delta_phi.backward() # p.grad = -(d_Phi_2/dp - d_Phi_1/dp)/(beta_2 - beta_1) ----> dL/dp  by the theorem
 
+
 # Equilibrium Propagation LCANet
    
 class EPLCANet(torch.nn.Module):
-    def __init__(self, in_size, channels, kernels, strides, fc, pools, unpools, paddings, activation=hard_sigmoid, softmax=False, lca=None):
+    def __init__(self, in_size, channels, kernels, strides, fc, pools, unpools, paddings, activation=hard_sigmoid, softmax=False, lca=None, dict_loss='recon'):
         super(EPLCANet, self).__init__()
 
         # Dimensions used to initialize neurons
@@ -388,6 +389,7 @@ class EPLCANet(torch.nn.Module):
         self.activation = activation
         self.pools = pools
         self.unpools = unpools
+        self.dict_loss = dict_loss
         self.poolidxs = []
         
         self.softmax = softmax # whether to use softmax readout or not
@@ -440,6 +442,7 @@ class EPLCANet(torch.nn.Module):
                 append(torch.zeros((mbs, self.fc[idx]), device=device))            
           
         return
+    
     def init_neurons(self, mbs, device):
         neurons = []
         append = neurons.append
@@ -488,8 +491,12 @@ class EPLCANet(torch.nn.Module):
         else: 
             # the output layer used for the prediction is no longer part of the system ! Summing until len(self.synapses) - 1 only
             for idx in range(conv_len):
+                # Do i need to put a sense of T in here? and pass in initial_states when t!=0 like in forward?
                 if isinstance(self.synapses[idx], LCAConv2D):
-                    acts, recon_error, states = self.synapses[idx](layers[idx])
+                    #if t == 0:
+                    #    lca_acts, recon_error, states = self.synapses[idx](layers[idx]) 
+                    #else:
+                    acts, recon_error, states = self.synapses[idx](layers[idx])#, initial_states=states)
                 else:
                     acts = self.synapses[idx](layers[idx])
                     
@@ -540,7 +547,7 @@ class EPLCANet(torch.nn.Module):
                     if t == 0:
                         lca_acts, recon_error, states = self.synapses[idx](layers[idx]) 
                     else:
-                       lca_acts, recon_error, states = self.synapses[idx](layers[idx], initial_states=states) # start LCA with states
+                        lca_acts, recon_error, states = self.synapses[idx](layers[idx], initial_states=states) # start LCA with states
                         
                     new_layers[idx],self.poolidxs[idx] = self.pools[idx](lca_acts) 
                     
@@ -570,8 +577,14 @@ class EPLCANet(torch.nn.Module):
                 else:
                     layers[idx+1] = self.activation(new_layers[idx]).detach()
                 
+                # Enable classification gradient computation for the first layer if updating with lca function?
+                # first layer does not get updated...
+                #if self.dict_loss == 'class' and idx==0:
+                #    layers[idx].requires_grad = True
+                #else:
+                #print(self.synapses[idx])
                 layers[idx+1].requires_grad = True
-
+                 
         if recon_error is not None:
             return layers[1:], recon_error, lca_acts
         else:
@@ -594,7 +607,6 @@ class EPLCANet(torch.nn.Module):
         delta_phi = (phi_2 - phi_1)/(beta_1 - beta_2)       
         
         delta_phi.backward() # p.grad = -(d_Phi_2/dp - d_Phi_1/dp)/(beta_2 - beta_1) ----> dL/dp  by the theorem         
-
 
 def check_gdu(model, x, y, T1, T2, betas, criterion, alg='EP'):
     # This function returns EP gradients and BPTT gradients for one training iteration
@@ -758,29 +770,22 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
 
     if checkpoint is None:
         if isinstance(model, EPLCANet): 
-            train_rloss = [0.0]
-            test_rloss = [0.0]
-            train_closs = [0.0]
-            test_closs = [0.0]
+            train_recon_err, test_recon_err = [], []
+            train_sparsity, test_sparsity = [], []
+            lca_sparsity_1, lca_sparsity_2, lca_sparsity_3 = [], [], []
         
         train_acc = [10.0]
         test_acc = [10.0]
-        train_loss = [0.0]
-        test_loss = [0.0]
         best = 0.0
         epoch_sofar = 0
         angles = [90.0]
     else:
         if isinstance(model, EPLCANet): 
-            train_rloss = checkpoint['train_rloss']
-            test_rloss = checkpoint['test_rloss']  
-            train_closs = checkpoint['train_closs']
-            test_closs = checkpoint['test_closs']  
+            train_recon_err, test_recon_err = checkpoint['train_recon_err'], checkpoint['test_recon_err']
+            train_sparsity, test_sparsity = checkpoint['train_sparsity'], checkpoint['test_sparsity']
         
         train_acc = checkpoint['train_acc']
         test_acc = checkpoint['test_acc']  
-        train_loss = checkpoint['train_loss']
-        test_loss = checkpoint['test_loss'] 
         
         best = checkpoint['best']
         epoch_sofar = checkpoint['epoch']
@@ -790,7 +795,6 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
         run_correct = 0
         run_total = 0
         model.train()
-        
         
         for idx, (x, y) in enumerate(train_loader):
             # setting gradients field to zero before backward
@@ -817,13 +821,21 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                     neurons = model(x, y, neurons, T1, beta=beta_1, criterion=criterion)
                 
                 neurons_1 = copy(neurons)
+                
                 if isinstance(model, EPLCANet):
                     if dict_loss == 'recon': # Update LCA weights using activations and reconstructions from first phase
-                        print(f'Updating LCA weights using activations and reconstructions from first phase {dict_loss}.') #ALSO updating with delta_pi.backwards here
+                        #print(f'Updating LCA weights using activations and reconstructions from first phase {dict_loss}.') 
+                        #ALSO updating dictionaries with delta_phi.backwards here... is that what we want? Avoid updating the first layer in phi function?
                         model.synapses[0].update_weights(lca_acts, recon_errors)
-                    elif dict_loss == 'class': # Update LCA weights using classification loss only
-                        print('Not updating LCA weights using lcapt function.')
-                    print(f'LCA weight sum: {model.synapses[0].get_weights().sum()}')
+                    elif dict_loss == 'class' : # Update LCA weights using classification loss only
+                        # Updated with compute_syn_grads later
+                        continue
+                        #print('Not updating LCA weights using lcapt function.')
+                    elif dict_loss == 'combo':
+                        continue
+                        #print('Not updating LCA weights using lcapt function.') # should be updating with compute_syn_grads
+                    
+                    #print(f'LCA weight sum: {model.synapses[0].get_weights().sum()}')
                 
             elif alg=='BPTT':
                 if isinstance(model, EPLCANet):
@@ -840,16 +852,13 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                 # T2 time step
                 if isinstance(model, EPLCANet):
                     neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta=0.0, criterion=criterion)      
+                    lca_sparsity_2 = (lca_acts != 0).float().mean().item()
                 else:
                     neurons = model(x, y, neurons, T2, beta=0.0, criterion=criterion)  
- 
- 
-            elif alg == 'BP':
-                if isinstance(model, EPLCANet):
-                    neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta=0.0, criterion=criterion)           
-                else:
-                    neurons = model(x, y, neurons, T2, beta=0.0, criterion=criterion)             
-                 
+            
+            elif alg=='BP':
+                neurons, recon_errors, lca_acts = model(x, y, neurons, T1 + T2, beta=0.0, criterion=criterion)  #?? T parameters 
+                lca_sparsity_2  = (lca_acts != 0).float().mean().item()
             # Predictions for running accuracy
             with torch.no_grad():
                 if not model.softmax:
@@ -891,13 +900,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                     
                     neurons_3 = copy(neurons)
                     
-                    if not(isinstance(model, VF_CNN)):
-                        model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, - beta_2), criterion)
-                    else:
-                        if model.same_update:
-                            model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, - beta_2), criterion)
-                        else:    
-                            model.compute_syn_grads(x, y, neurons_1, neurons_2, (beta_2, - beta_2), criterion, neurons_3=neurons_3)
+                    model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, - beta_2), criterion)
                 else:
                     model.compute_syn_grads(x, y, neurons_1, neurons_2, betas, criterion)
             
@@ -938,6 +941,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                 if thirdphase:
                     if isinstance(model, EPLCANet):
                         neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta = 0.0, criterion=criterion)    
+                        lca_sparsity_3 = (lca_acts != 0).float().mean().item()
                     else:
                         neurons = model(x, y, neurons, T2, beta = 0.0, criterion=criterion)     # come back to s*
                     neurons_2 = copy(neurons)
@@ -951,7 +955,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                         optimizer.step()
                         neurons_2 = copy(neurons)
 
-            elif alg=='BPTT' or alg == 'BP': # BPTT vs BP?
+            elif alg=='BPTT' or alg=='BP':
          
                 # final loss
                 if criterion.__class__.__name__.find('MSE')!=-1:
@@ -963,8 +967,20 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                         loss = criterion(model.synapses[-1](neurons[-1].view(x.size(0),-1)).float(), y).mean().squeeze()
                 
                 # Backpropagation through time
-                loss.backward()
+                if dict_loss == 'class':
+                    loss.backward()
+                elif dict_loss == 'recon':
+                    model.synapses[0].requires_grad = False # Do not pass gradient through first layer
+                    loss.backward()
+                    model.synapses[0].update_weights(lca_acts, recon_errors) # update first layer with lca loss
+                elif dict_loss == 'combo':
+                    # does the order of these matter?
+                    loss.backward()
+                    model.synapses[0].update_weights(lca_acts, recon_errors)
+                #print(f'LCA weight sum: {model.synapses[0].get_weights().sum()}')
                 optimizer.step()
+                
+                # Added reconstruction loss here... would this be how to use reconstruction loss with regular backprop?
                 
             if ((idx%(iter_per_epochs//10)==0) or (idx==iter_per_epochs-1)):
                 run_acc = run_correct/run_total
@@ -972,10 +988,8 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                       '\tRun train acc :', round(run_acc,3),'\t('+str(run_correct)+'/'+str(run_total)+')\t',
                       timeSince(start, ((idx+1)+epoch*iter_per_epochs)/(epochs*iter_per_epochs)))
                 if isinstance(model, EPLCANet):
-                    print(f'Avg recon error {(recon_errors).mean().item()}\tActivation sparsity" {lca_sparsity_1}, ')
-                if isinstance(model, VF_CNN): 
-                    angle = model.angle()
-                    print('angles ',angle)
+                    # Sparsity after which phase (1, 2, 3) do we care about? 3  = []
+                    print(f'Avg recon error {(recon_errors).mean().item()}\tActivation sparsity: {lca_sparsity_2}, ')
                 if check_thm and alg!='BPTT':
                     BPTT, EP = check_gdu(model, x[0:5,:], y[0:5], T1, T2, betas, criterion, alg=alg)
                     RMSE(BPTT, EP)
@@ -985,6 +999,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                 scheduler.step()
         if isinstance(model, EPLCANet):
             test_correct, test_recon_errors, test_acts = evaluate(model, test_loader, T1, device)
+            mean_test_sparsity = (test_acts != 0).float().mean().item()
         else:
             test_correct = evaluate(model, test_loader, T1, device) # Update to pass recon_error
         test_acc_t = test_correct/(len(test_loader.dataset))
@@ -992,17 +1007,12 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
             test_acc.append(100*test_acc_t)
             train_acc.append(100*run_acc)
             
-            train_rloss.append(recon_errors.mean().item())  #when alg==EP, which recon_errors_#?
-            test_rloss.append(test_recon_errors.mean().item())
+            train_recon_err.append(recon_errors.mean().item())  #when alg==EP, which recon_errors_#?
+            test_recon_err.append(test_recon_errors.mean().item())
+
+            train_sparsity.append(lca_sparsity_2)
+            test_sparsity.append(mean_test_sparsity)
             
-            train_sparsity_1.append(lca_sparsity_1) # First phase
-            train_sparsity_2.append(lca_sparsity_2) # Second phase
-            #test_sparsity_1.append(test_sparsity_1)
-            #test_sparsity_2.append(test_sparsity_2)
-            
-            if isinstance(model, VF_CNN):
-                angle = model.angle()
-                angles.append(angle)
             if test_correct > best:
                 best = test_correct
                 save_dic = {'model_state_dict': model.state_dict(), 'opt': optimizer.state_dict(),
@@ -1011,19 +1021,24 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                 save_dic['angles'] = angles
                 save_dic['scheduler'] = scheduler.state_dict() if scheduler is not None else None
                 if isinstance(model, EPLCANet):
-                    save_dic['train_loss'] = train_loss
-                    save_dic['test_loss'] = test_loss
-                    save_dic['train_sparsity'] = train_loss
-                    save_dic['test_loss'] = test_loss 
-                    
+                    save_dic['train_recon_err'] = train_recon_err
+                    save_dic['test_recon_err'] = test_recon_err
+                    save_dic['train_sparsity'] = lca_sparsity_2
+                    save_dic['test_sparsity'] = mean_test_sparsity 
                 
                 torch.save(save_dic,  path + '/checkpoint.tar')
                 torch.save(model, path + '/model.pt')
-            plot_acc(train_acc, test_acc, path) 
-            plot_err(train_rloss, test_rloss, path)       
-            #plot_sparsity(train_sparsity_1, train_sparsity_2, path)
+                
+            plot_lines(train_acc, test_acc, 'Accuracy', 'train', 'test', 'epoch', 'accuracy', path + '/accuracy.png') 
+            plot_lines(train_recon_err, test_recon_err, 'Recon Error', 'train', 'test', 'epoch', 'recon_error', path + '/recon_error.png')
+            plot_lines(train_sparsity, test_sparsity, 'Sparsity', 'train', 'test', 'epoch', 'sparsity', path + '/sparsity.png')
             
     if save:
+        if isinstance(model, EPLCANet):
+            save_dic['train_recon_err'] = train_recon_err
+            save_dic['test_recon_err'] = test_recon_err
+            save_dic['train_sparsity'] = train_sparsity
+            save_dic['test_sparsity'] = mean_test_sparsity 
         save_dic = {'model_state_dict': model.state_dict(), 'opt': optimizer.state_dict(),
                     'train_acc': train_acc, 'test_acc': test_acc, 
                     'best': best, 'epoch': epochs}
@@ -1052,12 +1067,15 @@ def adv_train(model, optimizer, train_loader, test_loader, T1, T2, betas, device
     if checkpoint is None:
         train_acc = [10.0]
         test_acc = [10.0]
+        train_recon_err = []
         best = 0.0
         epoch_sofar = 0
         angles = [90.0]
     else:
         train_acc = checkpoint['train_acc']
-        test_acc = checkpoint['test_acc']    
+        test_acc = checkpoint['test_acc']   
+        train_recon_err = ['train_recon_err']
+        test_recon_err = ['test_recon_err'] 
         best = checkpoint['best']
         epoch_sofar = checkpoint['epoch']
         angles = checkpoint['angles'] if 'angles' in checkpoint.keys() else []
@@ -1119,13 +1137,8 @@ def adv_train(model, optimizer, train_loader, test_loader, T1, T2, betas, device
                     neurons = copy(neurons_1)
                     neurons = model(x, y, neurons, T2, beta = - beta_2, criterion=criterion)
                     neurons_3 = copy(neurons)
-                    if not(isinstance(model, VF_CNN)):
-                        model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, - beta_2), criterion)
-                    else:
-                        if model.same_update:
-                            model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, - beta_2), criterion)
-                        else:    
-                            model.compute_syn_grads(x, y, neurons_1, neurons_2, (beta_2, - beta_2), criterion, neurons_3=neurons_3)
+
+                    model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, - beta_2), criterion)
                 else:
                     model.compute_syn_grads(x, y, neurons_1, neurons_2, betas, criterion)
 
@@ -1192,9 +1205,6 @@ def adv_train(model, optimizer, train_loader, test_loader, T1, T2, betas, device
                 print('Epoch :', round(epoch_sofar+epoch+(idx/iter_per_epochs), 2),
                       '\tRun train acc :', round(run_acc,3),'\t('+str(run_correct)+'/'+str(run_total)+')\t',
                       timeSince(start, ((idx+1)+epoch*iter_per_epochs)/(epochs*iter_per_epochs)))
-                if isinstance(model, VF_CNN): 
-                    angle = model.angle()
-                    print('angles ',angle)
                 if check_thm and alg!='BPTT':
                     BPTT, EP = check_gdu(model, x[0:5,:], y[0:5], T1, T2, betas, criterion, alg=alg)
                     RMSE(BPTT, EP)
@@ -1203,30 +1213,26 @@ def adv_train(model, optimizer, train_loader, test_loader, T1, T2, betas, device
             if epoch+epoch_sofar < scheduler.T_max:
                 scheduler.step()
         if isinstance(model, EPLCANet):
-            test_correct, test_loss, test_acts = evaluate(model, test_loader, T1, device)
+            test_correct, test_recon_err, test_acts = evaluate(model, test_loader, T1, device)
         else:
             test_correct = evaluate(model, test_loader, T1, device)
         test_acc_t = test_correct/(len(test_loader.dataset))
         if save:
             test_acc.append(100*test_acc_t)
             train_acc.append(100*run_acc)
-            if isinstance(model, VF_CNN):
-                angle = model.angle()
-                angles.append(angle)
             if test_correct > best:
                 best = test_correct
                 save_dic = {'model_state_dict': model.state_dict(), 'opt': optimizer.state_dict(),
-                            'train_acc': train_acc, 'test_acc': test_acc, 
+                            'train_acc': train_acc, 'test_acc': test_acc, 'train_recon_err': train_recon_err, 'test_recon_err': test_recon_err, 
                             'best': best, 'epoch': epoch_sofar+epoch+1}
-                save_dic['angles'] = angles
                 save_dic['scheduler'] = scheduler.state_dict() if scheduler is not None else None
                 torch.save(save_dic,  path + '/checkpoint_Train_Eps_%d.tar'%(int(epsilon*1000)))
                 torch.save(model, path + '/model_Train_Eps_%d.pt'%(int(epsilon*1000)))
-            plot_acc(train_acc, test_acc, path)        
+            #plot_acc(train_acc, test_acc, path)        
     
     if save:
         save_dic = {'model_state_dict': model.state_dict(), 'opt': optimizer.state_dict(),
-                    'train_acc': train_acc, 'test_acc': test_acc, 
+                    'train_acc': train_acc, 'test_acc': test_acc,  'train_recon_err': train_recon_err, 'test_recon_err': test_recon_err, 
                     'best': best, 'epoch': epochs}
         save_dic['angles'] = angles
         save_dic['scheduler'] = scheduler.state_dict() if scheduler is not None else None
@@ -1257,6 +1263,7 @@ def evaluate(model, loader, T, device):
         print(f'Running acc ({run_total}):', correct/(run_total*loader.batch_size))#,time.time()-start_time)
     acc = correct/len(loader.dataset) 
     print(phase+' accuracy :\t', acc)
+    
     if isinstance(model, EPLCANet):
         print(phase + ' recon_errors :\t', (recon_errors ** 2).mean().item())   
     if isinstance(model, EPLCANet):

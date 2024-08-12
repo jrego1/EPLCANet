@@ -99,7 +99,7 @@ if args.save:
     time = datetime.now().strftime('%H-%M-%S')
     if args.load_path=='':
         #path = '/storage/jr3548@drexel.edu/eplcanet/results/'+args.task+'/'+args.alg+'/'+args.loss+'/'+date+'/'+time+'_gpu'+str(args.device)
-        path = '/storage/jr3548@drexel.edu/eplcanet/results/'+args.task+'/'+args.alg+'/'+args.loss+'/'+args.model+'/'+ date+'/' 
+        path = '/storage/jr3548@drexel.edu/eplcanet/results/'+args.task+'/'+args.alg+'/'+args.dict_loss+'/'+args.model+'/'+ date+'/' 
     else:
         path = args.load_path
     if not(os.path.exists(path)):
@@ -231,7 +231,7 @@ if args.load_path=='':
                 )
             
             model = EPLCANet(28, channels, args.kernels, args.strides, args.fc, pools, unpools, paddings=args.paddings, 
-                                activation=activation, softmax=args.softmax, lca=lca)
+                                activation=activation, softmax=args.softmax, lca=lca, dict_loss=args.dict_loss)
             
 
     elif args.task=='CIFAR10':    

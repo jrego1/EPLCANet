@@ -174,7 +174,7 @@ def plot_lca_weights(model, path):
         if isinstance(model.synapses[idx], LCAConv2D):
             weights = make_feature_grid(model.synapses[idx].get_weights())
             plt.imshow(weights.float().cpu().numpy())
-            plt.title('EP-LCANet Learned Dictionary')
+            plt.title('LCANet Dictionary')
             plt.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
             plt.tight_layout()
             plt.savefig(path)
@@ -202,31 +202,20 @@ def plot_lca_acts(acts, threshold=0.1):
     plt.grid(True)
     plt.show()
 
-def plot_acc(train_acc, test_acc, path):
+def plot_lines(line_1, line_2, title, label_1, label_2, x_label, y_label, path):
     fig = plt.figure(figsize=(16,9))
-    x_axis = [i for i in range(len(train_acc))]
-    plt.plot(x_axis, train_acc, label='train')
-    plt.plot(x_axis, test_acc, label='test')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
+    x_axis = [i for i in range(len(line_1))]
+    plt.plot(x_axis, line_1, label=label_1)
+    plt.plot(x_axis, line_2, label=label_2)
+    plt.title(title)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
     plt.legend()
     plt.grid()
-    fig.savefig(path + '/train-test_acc.png')
+    fig.savefig(path)
+    plt.tight_layout()
     plt.close()
  
-def plot_err(train_err, test_err, path, error_type = ''):
-    fig = plt.figure(figsize=(16,9))
-    x_axis = [i for i in range(len(train_err))]
-    plt.plot(x_axis, train_err, label='train')
-    plt.plot(x_axis, test_err, label='test')
-    plt.xlabel('Epochs')
-    plt.ylabel(f'{error_type} Error')
-    plt.legend()
-    plt.grid()
-    fig.savefig(path + f'/train-test_err{error_type}.png')
-    plt.close()
-
-
 def createHyperparametersFile(path, args, model, command_line):
     
     hyperparameters = open(path + r"/hyperparameters.txt","w+")
