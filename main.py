@@ -491,7 +491,7 @@ if args.load_path == "":
                 input_zero_mean=True,
                 input_unit_var=True,
                 nonneg=True,
-                req_grad=True,
+                req_grad=False if args.dict_loss=='recon' else True,
                 weight_init=(torch.nn.init.kaiming_uniform_, {}),
             )
 

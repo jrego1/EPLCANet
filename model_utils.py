@@ -790,7 +790,7 @@ class EPLCANet(torch.nn.Module):
                         lca_acts, recon_error, states = self.synapses[idx](
                             layers[idx], initial_states=states
                         )  # start LCA with states
-
+                    #print((lca_acts != 0).float().mean())
                     new_layers[idx], self.poolidxs[idx] = self.pools[idx](lca_acts)
 
                 else:
@@ -1126,14 +1126,16 @@ def train(
         run_total = 0
         model.train()
 
+
         for idx, (x, y) in enumerate(train_loader):
             # setting gradients field to zero before backward
             model.zero_grad()
             optimizer.zero_grad()
-
+            #print(f'LCA weight max: {model.synapses[0].get_weights().max()}')
             x, y = x.to(device), y.to(device)
             # if alg=='CEP' and cep_debug:
             #    x = x.double()
+            
 
             if isinstance(model, EPLCANet):
                 with torch.no_grad():
@@ -1156,22 +1158,20 @@ def train(
 
                 if isinstance(model, EPLCANet):
                     if (
-                        dict_loss == "recon"
+                        dict_loss == "recon" or dict_loss == "combo"
                     ):  # Update LCA weights using activations and reconstructions from first phase
                         # print(f'Updating LCA weights using activations and reconstructions from first phase {dict_loss}.')
                         # ALSO updating dictionaries with delta_phi.backwards here... is that what we want? Avoid updating the first layer in phi function?
                         model.synapses[0].update_weights(lca_acts, recon_errors)
+                        
                     elif (
                         dict_loss == "class"
                     ):  # Update LCA weights using classification loss only
                         # Updated with compute_syn_grads later
-                        continue
+                        pass
                         # print('Not updating LCA weights using lcapt function.')
-                    elif dict_loss == "combo":
-                        continue
-                        # print('Not updating LCA weights using lcapt function.') # should be updating with compute_syn_grads
 
-                    # print(f'LCA weight sum: {model.synapses[0].get_weights().sum()}')
+                   #print(f'LCA weight sum: {model.synapses[0].get_weights().sum()}')
 
             elif alg == "BPTT":
                 if isinstance(model, EPLCANet):
@@ -1200,7 +1200,7 @@ def train(
 
             elif alg == "BP":
                 neurons, recon_errors, lca_acts = model(
-                    x, y, neurons, T1 + T2, beta=0.0, criterion=criterion
+                    x, y, neurons, T1, beta=0.0, criterion=criterion
                 )  # ?? T parameters
                 lca_sparsity_2 = (lca_acts != 0).float().mean().item()
             # Predictions for running accuracy
@@ -1257,6 +1257,7 @@ def train(
 
                     neurons_3 = copy(neurons)
 
+                    # EP weight update
                     model.compute_syn_grads(
                         x, y, neurons_2, neurons_3, (beta_2, -beta_2), criterion
                     )
@@ -1266,6 +1267,7 @@ def train(
                     )
 
                 optimizer.step()
+    
 
             elif alg == "CEP":
                 if random_sign and (beta_1 == 0.0):
@@ -1373,18 +1375,12 @@ def train(
                 # Backpropagation through time
                 if dict_loss == "class":
                     loss.backward()
-                elif dict_loss == "recon":
-                    model.synapses[0].requires_grad = (
-                        False  # Do not pass gradient through first layer
-                    )
+                elif dict_loss == "recon" or dict_loss == "combo":
                     loss.backward()
                     model.synapses[0].update_weights(
                         lca_acts, recon_errors
                     )  # update first layer with lca loss
-                elif dict_loss == "combo":
-                    # does the order of these matter?
-                    loss.backward()
-                    model.synapses[0].update_weights(lca_acts, recon_errors)
+                
                 # print(f'LCA weight sum: {model.synapses[0].get_weights().sum()}')
                 optimizer.step()
 
