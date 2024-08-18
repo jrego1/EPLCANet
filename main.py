@@ -548,7 +548,7 @@ if args.load_path == "":
                 input_zero_mean=True,
                 input_unit_var=True,
                 nonneg=True,
-                req_grad=True,
+                req_grad=False if args.dict_loss=='recon' else True,
                 weight_init=(torch.nn.init.kaiming_uniform_, {}),
             )
 
@@ -571,19 +571,56 @@ if args.load_path == "":
         pools = make_pools(args.pools)
         unpools = make_unpools(args.pools)
         channels = [3] + args.channels
-        model = P_CNN(
-            224,
-            channels,
-            args.kernels,
-            args.strides,
-            args.fc,
-            pools,
-            unpools,
-            paddings=args.paddings,
-            activation=activation,
-            softmax=args.softmax,
-        )
+        if args.model == "CNN":
+            model = P_CNN(
+                224,
+                channels,
+                args.kernels,
+                args.strides,
+                args.fc,
+                pools,
+                unpools,
+                paddings=args.paddings,
+                activation=activation,
+                softmax=args.softmax,
+            )
+            
+        elif args.model == "EPLCACNN":
+            channels = args.channels
 
+            # Add LCA Layer in front of model
+            lca = LCAConv2D(
+                args.channels[0],
+                3,
+                f"/storage/jr3548@drexel.edu/eplcanet/results/{args.task}/eplcanet",
+                args.kernels[0],
+                args.strides[0],
+                args.lca_lambda,
+                args.tau,
+                args.eta,
+                args.lca_iters,
+                pad="valid",
+                return_vars=["acts", "recon_errors", "states"],
+                input_zero_mean=True,
+                input_unit_var=True,
+                nonneg=True,
+                req_grad=False if args.dict_loss=='recon' else True,
+                weight_init=(torch.nn.init.kaiming_uniform_, {}),
+            )
+
+            model = EPLCANet(
+                224,
+                channels,
+                args.kernels,
+                args.strides,
+                args.fc,
+                pools,
+                unpools,
+                paddings=args.paddings,
+                activation=activation,
+                softmax=args.softmax,
+                lca=lca,
+            ) 
         print("\n")
         # print('Poolings =', model.pools)
 
@@ -676,8 +713,8 @@ if args.todo == "train":
     else:
         checkpoint = None
 
-    print("\ntraining algorithm : ", args.alg)
-    print("\nmodel type : ", args.model, "\n")
+    print("\nTraining algorithm : ", args.alg)
+    print("\nModel type : ", args.model, "\n")
     if args.save and args.load_path == "":
         createHyperparametersFile(path, args, model, command_line)
 
