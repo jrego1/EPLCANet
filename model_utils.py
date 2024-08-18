@@ -1159,15 +1159,16 @@ def train(
                 if isinstance(model, EPLCANet):
                     if (
                         dict_loss == "recon" or dict_loss == "combo"
+                        dict_loss == "recon" or dict_loss == "combo"
                     ):  # Update LCA weights using activations and reconstructions from first phase
                         # print(f'Updating LCA weights using activations and reconstructions from first phase {dict_loss}.')
-                        # ALSO updating dictionaries with delta_phi.backwards here... is that what we want? Avoid updating the first layer in phi function?
                         model.synapses[0].update_weights(lca_acts, recon_errors)
                         
                     elif (
                         dict_loss == "class"
                     ):  # Update LCA weights using classification loss only
                         # Updated with compute_syn_grads later
+                        pass
                         pass
                         # print('Not updating LCA weights using lcapt function.')
 
@@ -1201,7 +1202,7 @@ def train(
             elif alg == "BP":
                 neurons, recon_errors, lca_acts = model(
                     x, y, neurons, T1, beta=0.0, criterion=criterion
-                )  # ?? T parameters
+                )
                 lca_sparsity_2 = (lca_acts != 0).float().mean().item()
             # Predictions for running accuracy
             with torch.no_grad():
@@ -1373,15 +1374,14 @@ def train(
                         )
 
                 # Backpropagation through time
-                if dict_loss == "class":
-                    loss.backward()
-                elif dict_loss == "recon" or dict_loss == "combo":
+                loss.backward() # for all dict_loss types
+                
+                if dict_loss == "recon" or dict_loss == "combo":
                     loss.backward()
                     model.synapses[0].update_weights(
                         lca_acts, recon_errors
-                    )  # update first layer with lca loss
-                
-                # print(f'LCA weight sum: {model.synapses[0].get_weights().sum()}')
+                    ) 
+
                 optimizer.step()
 
                 # Added reconstruction loss here... would this be how to use reconstruction loss with regular backprop?
