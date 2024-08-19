@@ -1156,21 +1156,17 @@ def train(
 
                 neurons_1 = copy(neurons)
 
+                # EP dictionary update
                 if isinstance(model, EPLCANet):
                     if (
                         dict_loss == "recon" or dict_loss == "combo"
-                        dict_loss == "recon" or dict_loss == "combo"
-                    ):  # Update LCA weights using activations and reconstructions from first phase
-                        # print(f'Updating LCA weights using activations and reconstructions from first phase {dict_loss}.')
+                    ):  # Update LCA weights using activations and reconstructions from first phase 
                         model.synapses[0].update_weights(lca_acts, recon_errors)
                         
                     elif (
                         dict_loss == "class"
-                    ):  # Update LCA weights using classification loss only
-                        # Updated with compute_syn_grads later
+                    ):  # Update LCA weights using later compute_syn_grads only
                         pass
-                        pass
-                        # print('Not updating LCA weights using lcapt function.')
 
                    #print(f'LCA weight sum: {model.synapses[0].get_weights().sum()}')
 
@@ -1373,11 +1369,10 @@ def train(
                             .squeeze()
                         )
 
-                # Backpropagation through time
-                loss.backward() # for all dict_loss types
+                
+                loss.backward() # for all dict_loss types (class, combo, recon)
                 
                 if dict_loss == "recon" or dict_loss == "combo":
-                    loss.backward()
                     model.synapses[0].update_weights(
                         lca_acts, recon_errors
                     ) 
@@ -1445,16 +1440,16 @@ def train(
                     "test_acc": test_acc,
                     "best": best,
                     "epoch": epoch_sofar + epoch + 1,
+                    "train_recon_err": train_recon_err,
+                    "test_recon_err": test_recon_err,
+                    "train_sparsity": train_sparsity,
+                    "test_sparsity": test_sparsity,
                 }
+                
                 save_dic["angles"] = angles
                 save_dic["scheduler"] = (
                     scheduler.state_dict() if scheduler is not None else None
                 )
-                if isinstance(model, EPLCANet):
-                    save_dic["train_recon_err"] = train_recon_err
-                    save_dic["test_recon_err"] = test_recon_err
-                    save_dic["train_sparsity"] = lca_sparsity_2
-                    save_dic["test_sparsity"] = mean_test_sparsity
 
                 torch.save(save_dic, path + "/checkpoint.tar")
                 torch.save(model, path + "/model.pt")
@@ -1491,11 +1486,6 @@ def train(
             )
 
     if save:
-        if isinstance(model, EPLCANet):
-            save_dic["train_recon_err"] = train_recon_err
-            save_dic["test_recon_err"] = test_recon_err
-            save_dic["train_sparsity"] = train_sparsity
-            save_dic["test_sparsity"] = mean_test_sparsity
         save_dic = {
             "model_state_dict": model.state_dict(),
             "opt": optimizer.state_dict(),
@@ -1503,6 +1493,10 @@ def train(
             "test_acc": test_acc,
             "best": best,
             "epoch": epochs,
+            "train_recon_err": train_recon_err,
+            "test_recon_err": test_recon_err,
+            "train_sparsity": train_sparsity,
+            "test_sparsity": test_sparsity
         }
         save_dic["angles"] = angles
         save_dic["scheduler"] = (
@@ -2202,7 +2196,7 @@ def img_print(
     cifar_adv = np.reshape(np.asarray(cifar_adv), (-1, 3, 32, 32))
     labels = np.asarray(labels).flatten()
     load_path = (
-        "/vast/home/smansingh/LaborieuxEP/Equilibrium-Propagation/Natural_Images/"
+        "/"
     )
     np.save(load_path + "Images.npy", cifar_adv)
     np.save(load_path + "Labels.npy", labels)
