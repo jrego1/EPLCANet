@@ -352,9 +352,8 @@ if args.task == "MNIST":
         mnist_dset_train, batch_size=mbs, shuffle=True, num_workers=0
     )
 
-    # changed batch size from 200 to 100 to get around dataparallel error
     test_loader = torch.utils.data.DataLoader(
-        mnist_dset_test, batch_size=100, shuffle=False, num_workers=0
+        mnist_dset_test, batch_size=200, shuffle=False, num_workers=0
     )
 
 elif args.task == "CIFAR10":
@@ -458,9 +457,27 @@ if args.load_path == "":
     if args.task == "MNIST":
         pools = make_pools(args.pools)
         unpools = make_unpools(args.pools)
-        if args.model == "CNN":
-            channels = [1] + args.channels
-            model = P_CNN(
+        channels = args.channels
+        lca = LCAConv2D(
+                args.channels[0],
+                1,
+                f"/storage/jr3548@drexel.edu/eplcanet/results/{args.task}/eplcanet",
+                args.kernels[0],
+                args.strides[0],
+                args.lca_lambda,
+                args.tau,
+                args.lrs[0],
+                args.lca_iters,
+                pad="valid",
+                return_vars=["acts", "recon_errors", "states"],
+                input_zero_mean=True,
+                input_unit_var=True,
+                nonneg=True,
+                req_grad=False if args.dict_loss=='recon' else True,
+                weight_init=(torch.nn.init.kaiming_uniform_, {}),
+            )
+        if args.model == "BPLCACNN":
+            model = BPLCANet(              
                 28,
                 channels,
                 args.kernels,
@@ -471,30 +488,18 @@ if args.load_path == "":
                 paddings=args.paddings,
                 activation=activation,
                 softmax=args.softmax,
+                lca=lca,
+                dict_loss=args.dict_loss  
             )
+           # 32 by 32 by 64 CNN
+           
+        
         elif args.model == "EPLCACNN":
-            channels = args.channels
+            
 
             # Add LCA Layer in front of model
-            lca = LCAConv2D(
-                args.channels[0],
-                1,
-                f"/storage/jr3548@drexel.edu/eplcanet/results/{args.task}/eplcanet",
-                args.kernels[0],
-                args.strides[0],
-                args.lca_lambda,
-                args.tau,
-                args.eta,
-                args.lca_iters,
-                pad="valid",
-                return_vars=["acts", "recon_errors", "states"],
-                input_zero_mean=True,
-                input_unit_var=True,
-                nonneg=True,
-                req_grad=False if args.dict_loss=='recon' else True,
-                weight_init=(torch.nn.init.kaiming_uniform_, {}),
-            )
 
+            print('LCA layer req_grad = ', lca.req_grad)
             model = EPLCANet(
                 28,
                 channels,
@@ -507,7 +512,7 @@ if args.load_path == "":
                 activation=activation,
                 softmax=args.softmax,
                 lca=lca,
-                dict_loss=args.dict_loss,
+                dict_loss=args.dict_loss
             )
 
     elif args.task == "CIFAR10":
@@ -541,7 +546,7 @@ if args.load_path == "":
                 args.strides[0],
                 args.lca_lambda,
                 args.tau,
-                args.eta,
+                args.lrs[0],
                 args.lca_iters,
                 pad="valid",
                 return_vars=["acts", "recon_errors", "states"],
@@ -552,7 +557,6 @@ if args.load_path == "":
                 weight_init=(torch.nn.init.kaiming_uniform_, {}),
             )
 
-            print("return lca main: ", lca.return_vars)
             model = EPLCANet(
                 32,
                 channels,
@@ -632,6 +636,10 @@ else:
 model.to(device=device)
 
 print(model)
+print("\n")
+for name, param in model.named_parameters():
+    print(f"Layer {name} requires_grad: {param.requires_grad}")
+
 betas = args.betas[0], args.betas[1]
 
 if args.todo == "train":
@@ -718,28 +726,52 @@ if args.todo == "train":
     if args.save and args.load_path == "":
         createHyperparametersFile(path, args, model, command_line)
 
-    train(
-        model,
-        optimizer,
-        train_loader,
-        test_loader,
-        args.T1,
-        args.T2,
-        betas,
-        device,
-        args.epochs,
-        criterion,
-        alg=args.alg,
-        dict_loss=args.dict_loss,
-        random_sign=args.random_sign,
-        check_thm=args.check_thm,
-        save=args.save,
-        path=path,
-        checkpoint=checkpoint,
-        thirdphase=args.thirdphase,
-        scheduler=scheduler,
-        cep_debug=args.cep_debug,
-    )
+    if args.alg =="EP":
+        train_ep(
+            model,
+            optimizer,
+            train_loader,
+            test_loader,
+            args.T1,
+            args.T2,
+            betas,
+            device,
+            args.epochs,
+            criterion,
+            alg=args.alg,
+            dict_loss=args.dict_loss,
+            random_sign=args.random_sign,
+            check_thm=args.check_thm,
+            save=args.save,
+            path=path,
+            checkpoint=checkpoint,
+            thirdphase=args.thirdphase,
+            scheduler=scheduler,
+            cep_debug=args.cep_debug,
+        )
+    elif args.alg == "BP":
+        train_bp_clean(
+            model,
+            optimizer,
+            train_loader,
+            test_loader,
+            args.T1,
+            args.T2,
+            betas,
+            device,
+            args.epochs,
+            criterion,
+            alg=args.alg,
+            dict_loss=args.dict_loss,
+            random_sign=args.random_sign,
+            check_thm=args.check_thm,
+            save=args.save,
+            path=path,
+            checkpoint=checkpoint,
+            thirdphase=args.thirdphase,
+            scheduler=scheduler,
+            cep_debug=args.cep_debug,
+        )
 
 
 elif args.todo == "gducheck":

@@ -134,7 +134,84 @@ def my_init(scale):
 
 
 # Convolutional Neural Network
+class BPLCANet(nn.Module):
+    def __init__(        
+                 self,
+                in_size,
+                channels,
+                kernels,
+                strides,
+                fc,
+                pools,
+                unpools,
+                paddings,
+                activation=hard_sigmoid,
+                softmax=False,
+                lca=None,
+                dict_loss="recon",
+        ):
+        super(BPLCANet, self).__init__()
+               # Dimensions used to initialize neurons
+        self.in_size = in_size
+        self.channels = channels
+        self.kernels = kernels
+        self.strides = strides
+        self.paddings = paddings
+        self.fc = fc
+        self.nc = fc[-1]
 
+        self.lca_channels = channels[0]
+        self.conv_channels = channels[1:]
+
+        self.activation = activation
+        self.pools = pools
+        self.unpools = unpools
+        self.dict_loss = dict_loss
+        self.poolidxs = []
+
+        self.softmax = softmax  # whether to use softmax readout or not
+        size = in_size  # size of the input : 32 for cifar10
+
+        self.synapses = torch.nn.ModuleList()
+
+        self.synapses.append(lca)
+        size = int((size + 2 * paddings[0] - kernels[0]) / strides[0] + 1)  # size after lca layer
+
+        for idx in range(1, len(channels) - 1):  # Don't define new conv layer with LCA channels
+            self.synapses.append(
+                torch.nn.Conv2d(
+                    channels[idx],
+                    channels[idx + 1],
+                    kernels[idx],
+                    stride=strides[idx],
+                    padding=paddings[idx],
+                    bias=True,
+                )
+)
+
+            size = int(
+                (size + 2 * paddings[idx] - kernels[idx]) / strides[idx] + 1)  # size after conv
+            if self.pools[idx].__class__.__name__.find("Pool") != -1:
+                size = int(
+                    (size - pools[idx].kernel_size) / pools[idx].stride + 1)  # size after Pool
+
+        size = size * size * channels[-1]
+
+        fc_layers = [size] + fc
+
+        for idx in range(len(fc)):
+            self.synapses.append(torch.nn.Linear(fc_layers[idx], fc_layers[idx + 1], bias=True))
+
+        
+    def forward(self, x):
+        lca_acts, recon_error, states = self.synapses[0](x)  # Pass through the LCAConv2D layer
+        x = self.pools[0](x)
+        x = self.activation(self.synapses[1](lca_acts))  # Pass through the Conv2D layer and apply ReLU
+        x, _ = self.pools[1](x)
+
+        #x = self.synapses[2](x)  # Pass through the fully connected layer (applied in train)
+    
+        return x, recon_error, lca_acts
 
 class P_CNN(torch.nn.Module):
     def __init__(
@@ -383,7 +460,6 @@ class P_CNN(torch.nn.Module):
             for t in range(T):
                 cost = 0
                 for idx in range(conv_len):
-                    # print(f'Forward {idx} {self.synapses[idx].__class__.__name__}')
                     # Apply synapse to layer activations and pool (result = new_layers)
                     new_layers[idx], self.poolidxs[idx] = self.pools[idx](
                         self.synapses[idx](layers[idx])
@@ -394,7 +470,6 @@ class P_CNN(torch.nn.Module):
                         self.synapses[idx + 1].weight,
                         padding=self.paddings[idx + 1],
                     )
-                    # print(f'Output shape after unpool: {new_layers[idx].shape}')
                 if tot_len - conv_len != 1:
                     new_layers[conv_len - 1] = new_layers[conv_len - 1] + torch.matmul(
                         layers[conv_len + 1], self.synapses[conv_len].weight
@@ -492,7 +567,7 @@ class P_CNN(torch.nn.Module):
                                     dim=1,
                                 )
                             )
-
+            
             return neurons
 
     def compute_syn_grads(
@@ -599,10 +674,7 @@ class EPLCANet(torch.nn.Module):
 
         self.poolidxs = []
         append = self.poolidxs.append
-        size = self.in_size
-
-        # append(torch.zeros((mbs, self.channels[idx+1], size, size),  device=device))
-        # size = int( (size + 2*paddings[0] - kernels[0])/strides[0] + 1 )          # size after lca layer
+        size = self.in_size 
 
         for idx in range(len(self.channels) - 1):
             size = int(
@@ -664,6 +736,7 @@ class EPLCANet(torch.nn.Module):
                 append(
                     torch.zeros((mbs, self.fc[idx]), requires_grad=True, device=device)
                 )
+
         return neurons
 
     def Phi(self, x, y, neurons, beta, criterion):
@@ -707,15 +780,11 @@ class EPLCANet(torch.nn.Module):
 
         else:
             # the output layer used for the prediction is no longer part of the system ! Summing until len(self.synapses) - 1 only
-            for idx in range(conv_len):
-                # Do i need to put a sense of T in here? and pass in initial_states when t!=0 like in forward?
+            for idx in range(conv_len): # LCA is counted in conv_len
                 if isinstance(self.synapses[idx], LCAConv2D):
-                    # if t == 0:
-                    #    lca_acts, recon_error, states = self.synapses[idx](layers[idx])
-                    # else:
                     acts, recon_error, states = self.synapses[idx](
                         layers[idx]
-                    )  # , initial_states=states)
+                    )
                 else:
                     acts = self.synapses[idx](layers[idx])
 
@@ -781,23 +850,35 @@ class EPLCANet(torch.nn.Module):
         for t in range(T):
             cost = 0
             for idx in range(conv_len):
-                # Process each layer activations with synapses and pooling
-                # Apply synapse to layer activations and pool (result = new_layers)
+                # Process each layer activations with synapses and pooling (result = new_layers)
                 if isinstance(self.synapses[idx], LCAConv2D):
                     if t == 0:
                         lca_acts, recon_error, states = self.synapses[idx](layers[idx])
                     else:
-                        lca_acts, recon_error, states = self.synapses[idx](
-                            layers[idx], initial_states=states
-                        )  # start LCA with states
+                        lca_acts, recon_error, states = self.synapses[idx](layers[idx], initial_states=states) 
                     #print((lca_acts != 0).float().mean())
                     new_layers[idx], self.poolidxs[idx] = self.pools[idx](lca_acts)
-
                 else:
-                    new_layers[idx], self.poolidxs[idx] = self.pools[idx](
-                        self.synapses[idx](layers[idx])
-                    )
+                    new_layers[idx], self.poolidxs[idx] = self.pools[idx](self.synapses[idx](layers[idx]))
+ 
+            # Update LCA layer with EP feedback term from CNN layer (layer 1) to LCA layer (layer 0)
+            
+            
+            # layer_0 = layer_0 + F.conv_transpose2d(unpools[idx](layers[idx + 2], self.poolidxs[idx + 1], self.synapses[idx + 1], self.paddings[idx + 1])
+            
+            #print(f'lca states: {states.shape}') #[128, 128, 30, 30]
+            #print(f'new_layers[0] (lca): {new_layers[0].shape}') #[128, 128, 30, 30]
+            #print(f'new_layers[1] (conv1): {new_layers[1].shape}') #[128, 128, 15, 15]
+            #print(f'synapses (conv1): {self.synapses[1].weight.shape}') #[256, 128, 3, 3]
+            
+            # Works if I use unpools[1](maxpool), rather than unpools[0](identity)
+            # new_layers[0] are LCA neurons
+            new_layers[0] = new_layers[0] + F.conv_transpose2d(unpools[1](layers[2], self.poolidxs[1].to(x.device)),
+                                                 self.synapses[1].weight, padding=self.paddings[1])
+
+        
             for idx in range(1, conv_len - 1):
+                # Update LCA layer with EP feedback term from CNN layer to LCA layer 
                 # For each convolutional layer, update with transpose convolution
                 if (
                     unpools[idx].__class__.__name__.find("Pool") != -1
@@ -807,6 +888,7 @@ class EPLCANet(torch.nn.Module):
                         self.synapses[idx + 1].weight,
                         padding=self.paddings[idx + 1],
                     )
+                    print(f'Output shape after unpool: {new_layers[idx].shape}')
                 else:
                     new_layers[idx] = new_layers[idx]
             if tot_len - conv_len != 1:
@@ -815,11 +897,10 @@ class EPLCANet(torch.nn.Module):
                 ).reshape(new_layers[conv_len - 1].shape)
             if self.softmax:
                 for idx in range(conv_len, tot_len - 1):
-                    # Why did we comment the second term out here?
                     new_layers[idx] = self.synapses[idx](
                         layers[idx].view(mbs, -1)
                     )  # + torch.matmul(layers[idx+1],self.synapses[idx+1].weight.T)
-                for idx in range(conv_len, tot_len - 2):
+                for idx in range(conv_len, tot_len - 2): # !!! range(2, 1)
                     new_layers[idx] = new_layers[idx] + torch.matmul(
                         layers[idx + 2], self.synapses[idx + 1].weight
                     )
@@ -837,19 +918,13 @@ class EPLCANet(torch.nn.Module):
                     layers[idx + 1] = self.activation(new_layers[idx] + cost).detach()
                 else:
                     layers[idx + 1] = self.activation(new_layers[idx]).detach()
-
-                # Enable classification gradient computation for the first layer if updating with lca function?
-                # first layer does not get updated...
-                # if self.dict_loss == 'class' and idx==0:
-                #    layers[idx].requires_grad = True
-                # else:
-                # print(self.synapses[idx])
                 layers[idx + 1].requires_grad = True
 
         if recon_error is not None:
             return layers[1:], recon_error, lca_acts
         else:
             return layers[1:]
+        
 
     def compute_syn_grads(
         self, x, y, neurons_1, neurons_2, betas, criterion, check_thm=False
@@ -868,7 +943,7 @@ class EPLCANet(torch.nn.Module):
         phi_2 = self.Phi(x, y, neurons_2, beta_2, criterion)
         phi_2 = phi_2.mean()
         delta_phi = (phi_2 - phi_1) / (beta_1 - beta_2)
-
+        
         delta_phi.backward()  # p.grad = -(d_Phi_2/dp - d_Phi_1/dp)/(beta_2 - beta_1) ----> dL/dp  by the theorem
 
 
@@ -876,16 +951,12 @@ def check_gdu(model, x, y, T1, T2, betas, criterion, alg="EP"):
     # This function returns EP gradients and BPTT gradients for one training iteration
     #  given some labelled data (x, y), time steps for both phases and the loss
 
-    # Initialize dictionnaries that will contain BPTT gradients and EP updates
+    # Initialize dictionaries that will contain BPTT gradients and EP updates
     BPTT, EP = {}, {}
-    if alg == "CEP":
-        prev_p = {}
 
     for name, p in model.named_parameters():
         BPTT[name], EP[name] = [], []
-        if alg == "CEP":
-            prev_p[name] = p
-
+        
     neurons = model.init_neurons(x.size(0), x.device)
     for idx in range(len(neurons)):
         BPTT["neurons_" + str(idx)], EP["neurons_" + str(idx)] = [], []
@@ -1004,10 +1075,6 @@ def check_gdu(model, x, y, T1, T2, betas, criterion, alg="EP"):
             x, y, neurons_pre, neurons, betas, criterion, check_thm=True
         )  # compute the EP parameter update
 
-        if alg == "CEP":
-            for p in model.parameters():
-                p.data.add_(-1e-5 * p.grad.data)
-
         # Collect the EP updates forward in time
         for n, p in model.named_parameters():
             update = torch.empty_like(p).copy_(grad_or_zero(p))
@@ -1023,12 +1090,7 @@ def check_gdu(model, x, y, T1, T2, betas, criterion, alg="EP"):
         BPTT[key] = torch.cat(BPTT[key], dim=0).detach()
         EP[key] = torch.cat(EP[key], dim=0).detach()
 
-    if alg == "CEP":
-        for name, p in model.named_parameters():
-            p.data.copy_(prev_p[name])
-
     return BPTT, EP
-
 
 def RMSE(BPTT, EP):
     # print the root mean square error, and sign error between EP and BPTT gradients
@@ -1063,8 +1125,7 @@ def debug(model, prev_p, optimizer):
         # optimizer.param_groups[i]['weight_decay'] = prev_p['wds'+str(i)]
     optimizer.step()
 
-
-def train(
+def train_ep(
     model,
     optimizer,
     train_loader,
@@ -1093,10 +1154,9 @@ def train(
     beta_1, beta_2 = betas
 
     if checkpoint is None:
-        if isinstance(model, EPLCANet):
-            train_recon_err, test_recon_err = [], []
-            train_sparsity, test_sparsity = [], []
-            lca_sparsity_1, lca_sparsity_2, lca_sparsity_3 = [], [], []
+        train_recon_err, test_recon_err = [], []
+        train_sparsity, test_sparsity = [], []
+        lca_sparsity_1, lca_sparsity_2, lca_sparsity_3 = [], [], []
 
         train_acc = [10.0]
         test_acc = [10.0]
@@ -1104,12 +1164,11 @@ def train(
         epoch_sofar = 0
         angles = [90.0]
     else:
-        if isinstance(model, EPLCANet):
-            train_recon_err, test_recon_err = (
+        train_recon_err, test_recon_err = (
                 checkpoint["train_recon_err"],
                 checkpoint["test_recon_err"],
             )
-            train_sparsity, test_sparsity = (
+        train_sparsity, test_sparsity = (
                 checkpoint["train_sparsity"],
                 checkpoint["test_sparsity"],
             )
@@ -1126,261 +1185,75 @@ def train(
         run_total = 0
         model.train()
 
-
         for idx, (x, y) in enumerate(train_loader):
             # setting gradients field to zero before backward
             model.zero_grad()
             optimizer.zero_grad()
-            #print(f'LCA weight max: {model.synapses[0].get_weights().max()}')
-            x, y = x.to(device), y.to(device)
-            # if alg=='CEP' and cep_debug:
-            #    x = x.double()
-            
 
-            if isinstance(model, EPLCANet):
-                with torch.no_grad():
-                    model.synapses[0].normalize_weights()
+            x, y = x.to(device), y.to(device)
+            
+            with torch.no_grad():
+                model.synapses[0].normalize_weights()
 
             neurons = model.init_neurons(x.size(0), device)
 
-            if alg == "EP" or alg == "CEP":
-                # First phase
-                if isinstance(model, EPLCANet):
-                    neurons, recon_errors, lca_acts = model(
-                        x, y, neurons, T1, beta=beta_1, criterion=criterion
-                    )
-                    recon_errors_1 = copy(recon_errors)
-                    lca_sparsity_1 = (lca_acts != 0).float().mean().item()
-                else:
-                    neurons = model(x, y, neurons, T1, beta=beta_1, criterion=criterion)
+            neurons, recon_errors, lca_acts = model(x, y, neurons, T1, beta=beta_1, criterion=criterion)
+            
+            recon_errors_1 = copy(recon_errors)
+            lca_sparsity_1 = (lca_acts != 0).float().mean().item()
+            neurons_1 = copy(neurons)
+            
+            # EP dictionary update
+            if (dict_loss == "recon" or dict_loss == "combo"):  # Update LCA weights using activations and reconstructions from first phase  
+                model.synapses[0].update_weights(lca_acts, recon_errors)
+                #print(f'Weights after update_weights ({dict_loss}): ',model.synapses[0].weights[0][0][0])
 
-                neurons_1 = copy(neurons)
-
-                # EP dictionary update
-                if isinstance(model, EPLCANet):
-                    if (
-                        dict_loss == "recon" or dict_loss == "combo"
-                    ):  # Update LCA weights using activations and reconstructions from first phase 
-                        model.synapses[0].update_weights(lca_acts, recon_errors)
-                        
-                    elif (
-                        dict_loss == "class"
-                    ):  # Update LCA weights using later compute_syn_grads only
-                        pass
-
-                   #print(f'LCA weight sum: {model.synapses[0].get_weights().sum()}')
-
-            elif alg == "BPTT":
-                if isinstance(model, EPLCANet):
-                    neurons, recon_errors, lca_acts = model(
-                        x, y, neurons, T1 - T2, beta=0.0, criterion=criterion
-                    )
-                else:
-                    neurons = model(
-                        x, y, neurons, T1 - T2, beta=0.0, criterion=criterion
-                    )
-                # detach data and neurons from the graph
-                x = x.detach()
-                x.requires_grad = True
-                for k in range(len(neurons)):
-                    neurons[k] = neurons[k].detach()
-                    neurons[k].requires_grad = True
-
-                # T2 time step
-                if isinstance(model, EPLCANet):
-                    neurons, recon_errors, lca_acts = model(
-                        x, y, neurons, T2, beta=0.0, criterion=criterion
-                    )
-                    lca_sparsity_2 = (lca_acts != 0).float().mean().item()
-                else:
-                    neurons = model(x, y, neurons, T2, beta=0.0, criterion=criterion)
-
-            elif alg == "BP":
-                neurons, recon_errors, lca_acts = model(
-                    x, y, neurons, T1, beta=0.0, criterion=criterion
-                )
-                lca_sparsity_2 = (lca_acts != 0).float().mean().item()
             # Predictions for running accuracy
             with torch.no_grad():
                 if not model.softmax:
                     pred = torch.argmax(neurons[-1], dim=1).squeeze()
                 else:
                     # WATCH OUT: prediction is different when softmax == True
-                    pred = torch.argmax(
-                        F.softmax(
-                            model.synapses[-1](neurons[-1].view(x.size(0), -1)), dim=1
-                        ),
-                        dim=1,
-                    ).squeeze()
+                    pred = torch.argmax(F.softmax(model.synapses[-1](neurons[-1].view(x.size(0), -1)), dim=1),dim=1,).squeeze()
 
                 run_correct += (y == pred).sum().item()
                 run_total += x.size(0)
-                if (
-                    (idx % (iter_per_epochs // 10) == 0) or (idx == iter_per_epochs - 1)
-                ) and save:
+                if ((idx % (iter_per_epochs // 10) == 0) or (idx == iter_per_epochs - 1)) and save:
                     plot_neural_activity(neurons, path)
                     plot_lca_weights(model, path + "lca_weights.png")
 
-            if alg == "EP":
-                # Second phase
-                if random_sign and (beta_1 == 0.0):
-                    rnd_sgn = 2 * np.random.randint(2) - 1
-                    betas = beta_1, rnd_sgn * beta_2
-                    beta_1, beta_2 = betas
-                if isinstance(model, EPLCANet):
-                    neurons, recon_errors, lca_acts = model(
-                        x, y, neurons, T2, beta=beta_2, criterion=criterion
-                    )
-                    recon_error_2 = copy(recon_errors)
-                    lca_sparsity_2 = (lca_acts != 0).float().mean().item()
-                else:
-                    neurons = model(x, y, neurons, T2, beta=beta_2, criterion=criterion)
-                neurons_2 = copy(neurons)
+            # Second phase
+            if random_sign and (beta_1 == 0.0):
+                rnd_sgn = 2 * np.random.randint(2) - 1
+                betas = beta_1, rnd_sgn * beta_2
+                beta_1, beta_2 = betas
 
-                # Third phase (if we approximate f' as f'(x) = (f(x+h) - f(x-h))/2h)
-                if thirdphase:
-                    # come back to the first equilibrium
-                    neurons = copy(neurons_1)
-                    # recons? = copy(recons_1)
-                    if isinstance(model, EPLCANet):
-                        neurons, recon_errors, lca_acts = model(
-                            x, y, neurons, T2, beta=-beta_2, criterion=criterion
-                        )
-                        recon_error_3 = copy(recon_errors)
-                    else:
-                        neurons = model(
-                            x, y, neurons, T2, beta=-beta_2, criterion=criterion
-                        )
+            neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta=beta_2, criterion=criterion)
+            recon_error_2 = copy(recon_errors)
+            lca_sparsity_2 = (lca_acts != 0).float().mean().item()
 
-                    neurons_3 = copy(neurons)
+            neurons_2 = copy(neurons)
+            
+            #print(f'Weight before compute_syn_grads ({dict_loss}): ', model.synapses[0].weights[0][0][0])
 
-                    # EP weight update
-                    model.compute_syn_grads(
-                        x, y, neurons_2, neurons_3, (beta_2, -beta_2), criterion
-                    )
-                else:
-                    model.compute_syn_grads(
-                        x, y, neurons_1, neurons_2, betas, criterion
-                    )
-
-                optimizer.step()
-    
-
-            elif alg == "CEP":
-                if random_sign and (beta_1 == 0.0):
-                    rnd_sgn = 2 * np.random.randint(2) - 1
-                    betas = beta_1, rnd_sgn * beta_2
-                    beta_1, beta_2 = betas
-
-                # second phase
-                if cep_debug:
-                    prev_p = {}
-                    for n, p in model.named_parameters():
-                        prev_p[n] = p.clone().detach()
-                    for i in range(len(model.synapses)):
-                        prev_p["lrs" + str(i)] = optimizer.param_groups[i]["lr"]
-                        prev_p["wds" + str(i)] = optimizer.param_groups[i][
-                            "weight_decay"
-                        ]
-                        optimizer.param_groups[i]["lr"] *= 6e-5
-                        # optimizer.param_groups[i]['weight_decay'] = 0.0
-
-                for k in range(T2):
-                    if isinstance(model, EPLCANet):
-                        neurons, recon_errors, lca_acts = model(
-                            x, y, neurons, 1, beta=beta_2, criterion=criterion
-                        )
-                    else:
-                        neurons = model(
-                            x, y, neurons, 1, beta=beta_2, criterion=criterion
-                        )  # one step
-                    neurons_2 = copy(neurons)
-                    model.compute_syn_grads(
-                        x, y, neurons_1, neurons_2, betas, criterion
-                    )  # compute cep update between 2 consecutive steps
-                    for n, p in model.named_parameters():
-                        p.grad.data.div_(
-                            (
-                                1
-                                - optimizer.param_groups[int(n[9])]["lr"]
-                                * optimizer.param_groups[int(n[9])]["weight_decay"]
-                            )
-                            ** (T2 - 1 - k)
-                        )
-                    optimizer.step()  # update weights
-                    neurons_1 = copy(neurons)
-
-                if cep_debug:
-                    debug(model, prev_p, optimizer)
-
-                if thirdphase:
-                    if isinstance(model, EPLCANet):
-                        neurons, recon_errors, lca_acts = model(
-                            x, y, neurons, T2, beta=0.0, criterion=criterion
-                        )
-                        lca_sparsity_3 = (lca_acts != 0).float().mean().item()
-                    else:
-                        neurons = model(
-                            x, y, neurons, T2, beta=0.0, criterion=criterion
-                        )  # come back to s*
-                    neurons_2 = copy(neurons)
-                    for k in range(T2):
-                        if isinstance(model, EPLCANet):
-                            neurons, recon_errors, lca_acts = model(
-                                x, y, neurons, 1, beta=-beta_2, criterion=criterion
-                            )
-                        else:
-                            neurons = model(
-                                x, y, neurons, 1, beta=-beta_2, criterion=criterion
-                            )
-                        neurons_3 = copy(neurons)
-                        model.compute_syn_grads(
-                            x, y, neurons_2, neurons_3, (beta_2, -beta_2), criterion
-                        )
-                        optimizer.step()
-                        neurons_2 = copy(neurons)
-
-            elif alg == "BPTT" or alg == "BP":
-
-                # final loss
-                if criterion.__class__.__name__.find("MSE") != -1:
-                    loss = (
-                        0.5
-                        * criterion(
-                            neurons[-1].float(),
-                            F.one_hot(y, num_classes=model.nc).float(),
-                        )
-                        .sum(dim=1)
-                        .mean()
-                        .squeeze()
-                    )
-                else:
-                    if not model.softmax:
-                        loss = criterion(neurons[-1].float(), y).mean().squeeze()
-                    else:
-                        loss = (
-                            criterion(
-                                model.synapses[-1](
-                                    neurons[-1].view(x.size(0), -1)
-                                ).float(),
-                                y,
-                            )
-                            .mean()
-                            .squeeze()
-                        )
-
+            # Third phase (if we approximate f' as f'(x) = (f(x+h) - f(x-h))/2h)
+            if thirdphase:
+                # come back to the first equilibrium
+                neurons = copy(neurons_1)
+                neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta=-beta_2, criterion=criterion)
+                recon_error_3 = copy(recon_errors)
                 
-                loss.backward() # for all dict_loss types (class, combo, recon)
-                
-                if dict_loss == "recon" or dict_loss == "combo":
-                    model.synapses[0].update_weights(
-                        lca_acts, recon_errors
-                    ) 
+                neurons_3 = copy(neurons)
 
-                optimizer.step()
+                # EP weight update
+                model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, -beta_2), criterion)
+            else:
+                model.compute_syn_grads(x, y, neurons_1, neurons_2, betas, criterion)
 
-                # Added reconstruction loss here... would this be how to use reconstruction loss with regular backprop?
-
+            
+            optimizer.step()
+            
+            
             if (idx % (iter_per_epochs // 10) == 0) or (idx == iter_per_epochs - 1):
                 run_acc = run_correct / run_total
                 print(
@@ -1395,29 +1268,15 @@ def train(
                         / (epochs * iter_per_epochs),
                     ),
                 )
-                if isinstance(model, EPLCANet):
-                    # Sparsity after which phase (1, 2, 3) do we care about? 3  = []
-                    print(
-                        f"Avg recon error {(recon_errors).mean().item()}\tActivation sparsity: {lca_sparsity_2}, "
-                    )
-                if check_thm and alg != "BPTT":
-                    BPTT, EP = check_gdu(
-                        model, x[0:5, :], y[0:5], T1, T2, betas, criterion, alg=alg
-                    )
-                    RMSE(BPTT, EP)
+                print(f"Avg recon error {(recon_errors).mean().item()}\tActivation sparsity: {lca_sparsity_2}, ")
 
         if scheduler is not None:  # learning rate decay step
             if epoch + epoch_sofar < scheduler.T_max:
                 scheduler.step()
-        if isinstance(model, EPLCANet):
-            test_correct, test_recon_errors, test_acts = evaluate(
-                model, test_loader, T1, device
-            )
-            mean_test_sparsity = (test_acts != 0).float().mean().item()
-        else:
-            test_correct = evaluate(
-                model, test_loader, T1, device
-            )  # Update to pass recon_error
+        test_correct, test_recon_errors, test_acts = evaluate(
+            model, test_loader, T1, device
+        )
+        mean_test_sparsity = (test_acts != 0).float().mean().item()
         test_acc_t = test_correct / (len(test_loader.dataset))
         if save:
             test_acc.append(100 * test_acc_t)
@@ -1451,6 +1310,203 @@ def train(
                     scheduler.state_dict() if scheduler is not None else None
                 )
 
+                torch.save(save_dic, path + "/checkpoint.tar")
+                torch.save(model, path + "/model.pt")
+
+            plot_lines(train_acc, test_acc, "Accuracy", "train", "test", "epoch", "accuracy", path + "/accuracy.png")
+            plot_lines(train_recon_err, test_recon_err, "Recon Error", "train", "test", "epoch", "recon_error",path + "/recon_error.png")
+            plot_lines(train_sparsity, test_sparsity, "Sparsity", "train", "test", "epoch", "sparsity", path + "/sparsity.png")
+
+    if save:
+        save_dic = {
+            "model_state_dict": model.state_dict(),
+            "opt": optimizer.state_dict(),
+            "train_acc": train_acc,
+            "test_acc": test_acc,
+            "best": best,
+            "epoch": epochs,
+            "train_recon_err": train_recon_err,
+            "test_recon_err": test_recon_err,
+            "train_sparsity": train_sparsity,
+            "test_sparsity": test_sparsity
+        }
+        save_dic["angles"] = angles
+        save_dic["scheduler"] = (
+            scheduler.state_dict() if scheduler is not None else None
+        )
+        torch.save(save_dic, path + "/final_checkpoint.tar")
+        torch.save(model, path + "/final_model.pt")
+
+def train_bp(
+    model,
+    optimizer,
+    train_loader,
+    test_loader,
+    T1,
+    T2,
+    betas,
+    device,
+    epochs,
+    criterion,
+    alg="BP",
+    dict_loss="recon",
+    random_sign=False,
+    save=False,
+    check_thm=False,
+    path="",
+    checkpoint=None,
+    thirdphase=False,
+    scheduler=None,
+    cep_debug=False,
+    ):
+
+    mbs = train_loader.batch_size
+    start = time.time()
+    iter_per_epochs = math.ceil(len(train_loader.dataset) / mbs)
+    beta_1, beta_2 = betas
+    if checkpoint is None:
+        train_recon_err, test_recon_err = [], []
+        train_sparsity, test_sparsity = [], []
+        lca_sparsity_1, lca_sparsity_2, lca_sparsity_3 = [], [], []
+        train_acc = [10.0]
+        test_acc = [10.0]
+        best = 0.0
+        epoch_sofar = 0
+        angles = [90.0]
+    else:
+        train_recon_err, test_recon_err = (
+            checkpoint["train_recon_err"],
+            checkpoint["test_recon_err"],
+        )
+        train_sparsity, test_sparsity = (
+            checkpoint["train_sparsity"],
+            checkpoint["test_sparsity"],
+        )
+        train_acc = checkpoint["train_acc"]
+        test_acc = checkpoint["test_acc"]
+        best = checkpoint["best"]
+        epoch_sofar = checkpoint["epoch"]
+        angles = checkpoint["angles"] if "angles" in checkpoint.keys() else []
+
+    for epoch in range(epochs):
+        run_correct = 0
+        run_total = 0
+        model.train()
+
+        for idx, (x, y) in enumerate(train_loader):
+            # setting gradients field to zero before backward
+            model.zero_grad()
+            optimizer.zero_grad()
+
+            x, y = x.to(device), y.to(device)
+            
+            with torch.no_grad():
+                model.synapses[0].normalize_weights()
+
+            neurons = model.init_neurons(x.size(0), device)
+            
+            out, recon_errors, lca_acts = model(x, y, neurons, T1, beta=0.0, criterion=criterion)
+            
+            lca_sparsity_2 = (lca_acts != 0).float().mean().item()
+                
+            # Predictions for running accuracy
+            with torch.no_grad():
+                if not model.softmax:
+                    pred = torch.argmax(out, dim=1).squeeze()
+                else:
+                    # WATCH OUT: prediction is different when softmax == True
+                    pred = torch.argmax(F.softmax(model.synapses[-1](out.view(x.size(0), -1)), dim=1),dim=1,).squeeze()
+
+                run_correct += (y == pred).sum().item()
+                run_total += x.size(0)
+                if ((idx % (iter_per_epochs // 10) == 0) or (idx == iter_per_epochs - 1)) and save:
+                    plot_neural_activity(neurons, path)
+                    plot_lca_weights(model, path + "lca_weights.png")
+
+            # final loss
+            if criterion.__class__.__name__.find("MSE") != -1:
+                loss = (0.5 * criterion(out.float(),F.one_hot(y, num_classes=model.nc).float(),).sum(dim=1).mean().squeeze())
+            else:
+                if not model.softmax:
+                    loss = criterion(out.float(), y).mean().squeeze()
+                else:
+                    loss = (criterion(model.synapses[-1](out.view(x.size(0), -1)).float(),y,).mean().squeeze())
+
+            #my_layer = model.synapses[0]
+            #print(f'Weight before loss.back ({dict_loss}): ', model.synapses[0].weights[0][0][0])                
+            #print(f'lca layer acts: {(lca_acts != 0).float().mean().item()}')
+            #print(all(param.requires_grad for param in my_layer.parameters()))
+
+            loss.backward() # for all dict_loss types (class, combo, recon)
+            optimizer.step()
+            
+            #print(f'Weights after loss.back ({dict_loss}): ', model.synapses[0].weights[0][0][0])
+            
+            if dict_loss == "recon" or dict_loss == "combo":
+                model.synapses[0].update_weights(
+                    lca_acts, recon_errors
+                ) 
+                #print(f'Weights after update weights ({dict_loss}): ', model.synapses[0].weights[0][0][0])
+
+
+            if (idx % (iter_per_epochs // 10) == 0) or (idx == iter_per_epochs - 1):
+                run_acc = run_correct / run_total
+                print(
+                    "Epoch :",
+                    round(epoch_sofar + epoch + (idx / iter_per_epochs), 2),
+                    "\tRun train acc :",
+                    round(run_acc, 3),
+                    "\t(" + str(run_correct) + "/" + str(run_total) + ")\t",
+                    timeSince(
+                        start,
+                        ((idx + 1) + epoch * iter_per_epochs)
+                        / (epochs * iter_per_epochs),
+                    ),
+                )                
+                print(f"Avg recon error {(recon_errors).mean().item()}\tActivation sparsity: {lca_sparsity_2}")
+                if check_thm:
+                    BPTT, EP = check_gdu(
+                        model, x[0:5, :], y[0:5], T1, T2, betas, criterion, alg=alg
+                    )
+                    RMSE(BPTT, EP)
+
+        if scheduler is not None:  # learning rate decay step
+            if epoch + epoch_sofar < scheduler.T_max:
+                scheduler.step()
+                
+        test_correct, test_recon_errors, test_acts = evaluate(model, test_loader, T1, device)
+        
+        mean_test_sparsity = (test_acts != 0).float().mean().item()
+        test_acc_t = test_correct / (len(test_loader.dataset))
+        
+        if save:
+            test_acc.append(100 * test_acc_t)
+            train_acc.append(100 * run_acc)
+            
+            train_recon_err.append(recon_errors.mean().item())  # when alg==EP, which recon_errors_#?
+            test_recon_err.append(test_recon_errors.mean().item())
+
+            train_sparsity.append(lca_sparsity_2)
+            test_sparsity.append(mean_test_sparsity)
+
+            if test_correct > best:
+                best = test_correct
+                save_dic = {
+                    "model_state_dict": model.state_dict(),
+                    "opt": optimizer.state_dict(),
+                    "train_acc": train_acc,
+                    "test_acc": test_acc,
+                    "best": best,
+                    "epoch": epoch_sofar + epoch + 1,
+                    "train_recon_err": train_recon_err,
+                    "test_recon_err": test_recon_err,
+                    "train_sparsity": train_sparsity,
+                    "test_sparsity": test_sparsity,
+                }
+                save_dic["angles"] = angles
+                save_dic["scheduler"] = (
+                    scheduler.state_dict() if scheduler is not None else None
+                )
                 torch.save(save_dic, path + "/checkpoint.tar")
                 torch.save(model, path + "/model.pt")
 
@@ -1499,13 +1555,220 @@ def train(
             "test_sparsity": test_sparsity
         }
         save_dic["angles"] = angles
-        save_dic["scheduler"] = (
-            scheduler.state_dict() if scheduler is not None else None
-        )
+        save_dic["scheduler"] = (scheduler.state_dict() if scheduler is not None else None)
         torch.save(save_dic, path + "/final_checkpoint.tar")
         torch.save(model, path + "/final_model.pt")
+        
+def train_bp_clean(
+    model,
+    optimizer,
+    train_loader,
+    test_loader,
+    T1,
+    T2,
+    betas,
+    device,
+    epochs,
+    criterion,
+    alg="BP",
+    dict_loss="recon",
+    random_sign=False,
+    save=False,
+    check_thm=False,
+    path="",
+    checkpoint=None,
+    thirdphase=False,
+    scheduler=None,
+    cep_debug=False,
+):
 
+    mbs = train_loader.batch_size
+    start = time.time()
+    iter_per_epochs = math.ceil(len(train_loader.dataset) / mbs)
+    beta_1, beta_2 = betas
+    # break into bp and ep functions
+    if checkpoint is None:
+        train_recon_err, test_recon_err = [], []
+        train_sparsity, test_sparsity = [], []
+        lca_sparsity_1, lca_sparsity_2, lca_sparsity_3 = [], [], []
+        train_acc = [10.0]
+        test_acc = [10.0]
+        best = 0.0
+        epoch_sofar = 0
+        angles = [90.0]
+    else:
+        train_recon_err, test_recon_err = (
+            checkpoint["train_recon_err"],
+            checkpoint["test_recon_err"],
+        )
+        train_sparsity, test_sparsity = (
+            checkpoint["train_sparsity"],
+            checkpoint["test_sparsity"],
+        )
+        train_acc = checkpoint["train_acc"]
+        test_acc = checkpoint["test_acc"]
+        best = checkpoint["best"]
+        epoch_sofar = checkpoint["epoch"]
+        angles = checkpoint["angles"] if "angles" in checkpoint.keys() else []
 
+    for epoch in range(epochs):
+        run_correct = 0
+        run_total = 0
+        model.train()
+
+        for idx, (x, y) in enumerate(train_loader):
+            # setting gradients field to zero before backward
+            model.zero_grad()
+            optimizer.zero_grad()
+
+            x, y = x.to(device), y.to(device)
+            
+            with torch.no_grad():
+                model.synapses[0].normalize_weights()
+            
+            # Forward does not return this right now.
+            out, recon_errors, lca_acts = model(x)
+            
+            lca_sparsity = (lca_acts != 0).float().mean().item()
+                
+            # Predictions for running accuracy
+            with torch.no_grad():
+                if not model.softmax:
+                    pred = torch.argmax(out, dim=1).squeeze()
+                else:
+                    # WATCH OUT: prediction is different when softmax == True
+                    pred = torch.argmax(F.softmax(model.synapses[-1](out.view(x.size(0), -1)), dim=1),dim=1,).squeeze()
+                     
+                run_correct += (y == pred).sum().item()
+                run_total += x.size(0)
+                if ((idx % (iter_per_epochs // 10) == 0) or (idx == iter_per_epochs - 1)) and save:
+                    #plot_neural_activity(neurons, path)
+                    plot_lca_weights(model, path + "lca_weights.png")
+                    
+            # final loss
+            if criterion.__class__.__name__.find("MSE") != -1:
+                loss = (0.5 * criterion(out.float(),F.one_hot(y, num_classes=model.nc).float(),).sum(dim=1).mean().squeeze())
+            else:
+                if not model.softmax:
+                    loss = criterion(out.float(), y).mean().squeeze()
+                else:
+                    loss = (criterion(model.synapses[-1](out.view(x.size(0), -1)).float(),y,).mean().squeeze())
+
+            #my_layer = model.synapses[0]
+            #print(f'Weight before loss.back ({dict_loss}): ', model.synapses[0].weights[0][0][0])                
+            #print(f'lca layer acts: {(lca_acts != 0).float().mean().item()}')
+            #print(all(param.requires_grad for param in my_layer.parameters()))
+            #print(f'Weights before loss.back ({dict_loss}): ', model.synapses[0].weights[0][0][0])
+
+            loss.backward() # for all dict_loss types (class, combo, recon)
+            
+            #print(f'Weights after loss.back ({dict_loss}): ', model.synapses[0].weights[0][0][0])
+            
+            if dict_loss == "recon" or dict_loss == "combo":
+                model.synapses[0].update_weights(
+                    lca_acts, recon_errors
+                ) 
+                #print(f'Weights after update weights ({dict_loss}): ', model.synapses[0].weights[0][0][0])
+
+            optimizer.step()
+            #print(f'Weights after step ({dict_loss}): ', model.synapses[0].weights[0][0][0])
+
+            if (idx % (iter_per_epochs // 10) == 0) or (idx == iter_per_epochs - 1):
+                run_acc = run_correct / run_total
+                print( "Epoch :",round(epoch_sofar + epoch + (idx / iter_per_epochs), 2),"\tRun train acc :",round(run_acc, 3),
+                    "\t(" + str(run_correct) + "/" + str(run_total) + ")\t",timeSince(start,((idx + 1) + epoch * iter_per_epochs)/ (epochs * iter_per_epochs),),)                
+                print(f"Avg recon error {(recon_errors).mean().item()}\tActivation sparsity: {lca_sparsity}")
+
+        if scheduler is not None:  # learning rate decay step
+            if epoch + epoch_sofar < scheduler.T_max:
+                scheduler.step()
+        
+        
+        test_correct, test_recon_errors, test_acts = evaluate(model, test_loader, T1, device)
+    
+        mean_test_sparsity = (test_acts != 0).float().mean().item()
+        test_acc_t = test_correct / (len(test_loader.dataset))
+        
+        if save:
+            test_acc.append(100 * test_acc_t)
+            train_acc.append(100 * run_acc)
+            
+            train_recon_err.append(recon_errors.mean().item())  # when alg==EP, which recon_errors_#?
+            test_recon_err.append(test_recon_errors.mean().item())
+
+            train_sparsity.append(lca_sparsity)
+            test_sparsity.append(mean_test_sparsity)
+
+            if test_correct > best:
+                best = test_correct
+                save_dic = {
+                    "model_state_dict": model.state_dict(),
+                    "opt": optimizer.state_dict(),
+                    "train_acc": train_acc,
+                    "test_acc": test_acc,
+                    "best": best,
+                    "epoch": epoch_sofar + epoch + 1,
+                    "train_recon_err": train_recon_err,
+                    "test_recon_err": test_recon_err,
+                    "train_sparsity": train_sparsity,
+                    "test_sparsity": test_sparsity,
+                }
+                save_dic["angles"] = angles
+                save_dic["scheduler"] = (
+                    scheduler.state_dict() if scheduler is not None else None
+                )
+                torch.save(save_dic, path + "/checkpoint.tar")
+                torch.save(model, path + "/model.pt")
+
+            plot_lines(
+                train_acc,
+                test_acc,
+                "Accuracy",
+                "train",
+                "test",
+                "epoch",
+                "accuracy",
+                path + "/accuracy.png",
+            )
+            plot_lines(
+                train_recon_err,
+                test_recon_err,
+                "Recon Error",
+                "train",
+                "test",
+                "epoch",
+                "recon_error",
+                path + "/recon_error.png",
+            )
+            plot_lines(
+                train_sparsity,
+                test_sparsity,
+                "Sparsity",
+                "train",
+                "test",
+                "epoch",
+                "sparsity",
+                path + "/sparsity.png",
+            )
+
+    if save:
+        save_dic = {
+            "model_state_dict": model.state_dict(),
+            "opt": optimizer.state_dict(),
+            "train_acc": train_acc,
+            "test_acc": test_acc,
+            "best": best,
+            "epoch": epochs,
+            "train_recon_err": train_recon_err,
+            "test_recon_err": test_recon_err,
+            "train_sparsity": train_sparsity,
+            "test_sparsity": test_sparsity
+        }
+        save_dic["angles"] = angles
+        save_dic["scheduler"] = (scheduler.state_dict() if scheduler is not None else None)
+        torch.save(save_dic, path + "/final_checkpoint.tar")
+        torch.save(model, path + "/final_model.pt")
+        
 def adv_train(
     model,
     optimizer,
@@ -1594,8 +1857,6 @@ def adv_train(
 
         for idx, (x, y) in enumerate(train_loader):
             x, y = x.to(device), y.to(device)
-            # if alg=='CEP' and cep_debug:
-            #    x = x.double()
             attack_param = 1
             x = torch.from_numpy(attack.generate(x.cpu().numpy())).to(device)
             attack_param = 0
@@ -1844,18 +2105,20 @@ def evaluate(model, loader, T, device):
     start_time = time.time()
     for x, y in loader:
         x, y = x.to(device), y.to(device)
-        neurons = model.init_neurons(x.size(0), device)
         if isinstance(model, EPLCANet):
+            neurons = model.init_neurons(x.size(0), device)
             neurons, recon_errors, lca_acts = model(x, y, neurons, T)
-        else:
-            neurons = model(x, y, neurons, T)  # dynamics for T time steps
+            out = neurons[-1]
+        elif isinstance(model, BPLCANet):
+            out, recon_errors, lca_acts = model(x)
+            
         if not model.softmax:
             pred = torch.argmax(
-                neurons[-1], dim=1
+                out, dim=1
             ).squeeze()  # in this cas prediction is done directly on the last (output) layer of neurons
         else:  # prediction is done as a readout of the penultimate layer (output is not part of the system)
             pred = torch.argmax(
-                F.softmax(model.synapses[-1](neurons[-1].view(x.size(0), -1)), dim=1),
+                F.softmax(model.synapses[-1](out.view(x.size(0), -1)), dim=1),
                 dim=1,
             ).squeeze()
 
@@ -1867,12 +2130,10 @@ def evaluate(model, loader, T, device):
     acc = correct / len(loader.dataset)
     print(phase + " accuracy :\t", acc)
 
-    if isinstance(model, EPLCANet):
-        print(phase + " recon_errors :\t", (recon_errors**2).mean().item())
-    if isinstance(model, EPLCANet):
-        return correct, recon_errors, lca_acts
-    else:
-        return correct
+    print(phase + " recon_errors :\t", (recon_errors).mean().item())
+
+    return correct, recon_errors, lca_acts
+
 
 
 def attack(

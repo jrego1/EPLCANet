@@ -195,11 +195,8 @@ def plot_synapses(model, path):
     plt.close()
 
 
-def plot_lca_weights(model, path):
-    if isinstance(model.synapses, nn.DataParallel):
-        N = len(model.module.synapses)
-    else:
-        N = len(model.synapses)
+def plot_lca_weights(model, path=None):
+    N = len(model.synapses)
     for idx in range(N):
         if isinstance(model.synapses[idx], LCAConv2D):
             weights = make_feature_grid(model.synapses[idx].get_weights())
@@ -209,7 +206,8 @@ def plot_lca_weights(model, path):
                 left=False, bottom=False, labelleft=False, labelbottom=False
             )
             plt.tight_layout()
-            plt.savefig(path)
+            if path is not None:
+                plt.savefig(path)
 
 
 def plot_lca_acts(acts, threshold=0.1):
