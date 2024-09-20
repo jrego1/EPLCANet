@@ -1,3 +1,5 @@
 /__pycache__/
-eval_model.ipynb
 .DS_Store
+model_utils_old.py
+train_lcanet_cifar.ipynb
+/check

@@ -382,15 +382,6 @@ elif args.task == "CIFAR10":
             ]
         )
 
-    transform_test = torchvision.transforms.Compose(
-        [
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize(
-                mean=(0.4914, 0.4822, 0.4465), std=(3 * 0.2023, 3 * 0.1994, 3 * 0.2010)
-            ),
-        ]
-    )
-
     if args.todo.find("attack") != -1 or args.todo == "generate":
         print(args.todo)
         transform_test = torchvision.transforms.Compose(
@@ -432,7 +423,6 @@ elif args.task == "CIFAR10":
     test_loader = torch.utils.data.DataLoader(
         cifar10_test_dset, batch_size=200, shuffle=False, num_workers=1
     )
-
 
 if args.act == "mysig":
     activation = my_sigmoid
@@ -476,6 +466,7 @@ if args.load_path == "":
                 req_grad=False if args.dict_loss=='recon' else True,
                 weight_init=(torch.nn.init.kaiming_uniform_, {}),
             )
+        
         if args.model == "BPLCACNN":
             model = BPLCANet(              
                 28,
@@ -491,14 +482,10 @@ if args.load_path == "":
                 lca=lca,
                 dict_loss=args.dict_loss  
             )
-           # 32 by 32 by 64 CNN
            
         
         elif args.model == "EPLCACNN":
-            
-
             # Add LCA Layer in front of model
-
             print('LCA layer req_grad = ', lca.req_grad)
             model = EPLCANet(
                 28,
@@ -519,7 +506,7 @@ if args.load_path == "":
         pools = make_pools(args.pools)
         unpools = make_unpools(args.pools)
         # channels = [3]+args.channels
-        channels = [args.n_feats] + args.channels
+        channels = args.channels
         if args.model == "CNN":
             model = P_CNN(
                 32,
@@ -535,6 +522,41 @@ if args.load_path == "":
             )
 
         elif args.model == "EPLCACNN":
+            # Add LCA Layer in front of model
+            lca = LCAConv2D(
+                args.channels[0],
+                3,
+                f"/storage/jr3548@drexel.edu/eplcanet/results/{args.task}/eplcanet",
+                args.kernels[0],
+                args.strides[0],
+                args.lca_lambda,
+                args.tau,
+                args.eta, # args.eta or args.lrs[0]?
+                args.lca_iters,
+                pad="valid",
+                return_vars=["acts", "recon_errors", "states"],
+                input_zero_mean=True,
+                input_unit_var=True,
+                nonneg=True,
+                req_grad=False if args.dict_loss=='recon' else True,
+                #weight_init=(torch.nn.init.kaiming_uniform_, {}),
+            )
+
+            model = EPLCANet(
+                32,
+                channels,
+                args.kernels,
+                args.strides,
+                args.fc,
+                pools,
+                unpools,
+                paddings=args.paddings,
+                activation=activation,
+                softmax=args.softmax,
+                lca=lca,
+            )
+
+        elif args.model == "BPLCACNN":
             channels = args.channels
 
             # Add LCA Layer in front of model
@@ -546,7 +568,7 @@ if args.load_path == "":
                 args.strides[0],
                 args.lca_lambda,
                 args.tau,
-                args.lrs[0],
+                args.eta,
                 args.lca_iters,
                 pad="valid",
                 return_vars=["acts", "recon_errors", "states"],
@@ -554,10 +576,10 @@ if args.load_path == "":
                 input_unit_var=True,
                 nonneg=True,
                 req_grad=False if args.dict_loss=='recon' else True,
-                weight_init=(torch.nn.init.kaiming_uniform_, {}),
+                #weight_init=(torch.nn.init.kaiming_uniform_, {}),
             )
 
-            model = EPLCANet(
+            model = BPLCANet(
                 32,
                 channels,
                 args.kernels,
@@ -609,7 +631,7 @@ if args.load_path == "":
                 input_unit_var=True,
                 nonneg=True,
                 req_grad=False if args.dict_loss=='recon' else True,
-                weight_init=(torch.nn.init.kaiming_uniform_, {}),
+                #weight_init=(torch.nn.init.kaiming_uniform_, {}),
             )
 
             model = EPLCANet(
@@ -655,34 +677,15 @@ if args.todo == "train":
 
     for idx in range(len(model.synapses)):
         if args.wds is None:
-            if isinstance(model, nn.DataParallel):
-                optim_params.append(
-                    {
-                        "params": model.module.synapses[idx].parameters(),
-                        "lr": args.lrs[idx],
-                    }
-                )
-            else:
-                optim_params.append(
-                    {"params": model.synapses[idx].parameters(), "lr": args.lrs[idx]}
-                )
+            optim_params.append({"params": model.synapses[idx].parameters(), "lr": args.lrs[idx]})
         else:
-            if isinstance(model, nn.DataParallel):
-                optim_params.append(
-                    {
-                        "params": model.module.synapses[idx].parameters(),
-                        "lr": args.lrs[idx],
-                        "weight_decay": args.wds[idx],
-                    }
-                )
-            else:
-                optim_params.append(
-                    {
-                        "params": model.synapses[idx].parameters(),
-                        "lr": args.lrs[idx],
-                        "weight_decay": args.wds[idx],
-                    }
-                )
+            optim_params.append(
+                {
+                    "params": model.synapses[idx].parameters(),
+                    "lr": args.lrs[idx],
+                    "weight_decay": args.wds[idx],
+                }
+            )
     if hasattr(model, "B_syn"):
         for idx in range(len(model.B_syn)):
             if args.wds is None:
@@ -751,6 +754,29 @@ if args.todo == "train":
         )
     elif args.alg == "BP":
         train_bp_clean(
+            model,
+            optimizer,
+            train_loader,
+            test_loader,
+            args.T1,
+            args.T2,
+            betas,
+            device,
+            args.epochs,
+            criterion,
+            alg=args.alg,
+            dict_loss=args.dict_loss,
+            random_sign=args.random_sign,
+            check_thm=args.check_thm,
+            save=args.save,
+            path=path,
+            checkpoint=checkpoint,
+            thirdphase=args.thirdphase,
+            scheduler=scheduler,
+            cep_debug=args.cep_debug,
+        )
+    elif args.alg == "BPTT":
+        train_bptt(
             model,
             optimizer,
             train_loader,

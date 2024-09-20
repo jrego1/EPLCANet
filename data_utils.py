@@ -349,3 +349,33 @@ def read_hyperparameters(file_path: str) -> dict:
                     i += 1
 
     return load_params
+
+def plot_metrics(train_metric, val_metric, metric_name, save_path):
+    """
+    Plots training and validation metrics on the same plot and saves the plot.
+    
+    Args:
+    - train_metric (list): List of training metric values.
+    - val_metric (list): List of validation metric values.
+    - metric_name (str): The name of the metric to plot (e.g., 'Accuracy', 'Loss').
+    - save_path (str): The file path where the plot should be saved.
+    - epochs (list or int): List of epoch numbers or an integer representing the number of epochs.
+    
+    Returns:
+    None
+    """
+    epochs = list(range(1, len(train_metric) + 1))
+    
+    plt.figure(figsize=(10, 6))
+    
+    plt.plot(epochs, train_metric, label=f'Train {metric_name}')
+    plt.plot(epochs, val_metric, label=f'Val {metric_name}')
+    
+    # Title and labels
+    plt.title(f'LCANet {metric_name}')
+    plt.xlabel('Epoch')
+    plt.ylabel(metric_name)
+    plt.legend(loc='best')
+    
+    plt.savefig(save_path)
+    plt.close() 
