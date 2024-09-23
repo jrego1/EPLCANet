@@ -202,13 +202,6 @@ parser.add_argument(
 parser.add_argument("--attack-norm", type=int, default=2, help="Attack Norm")
 
 parser.add_argument(
-    "--n_feats",
-    type=int,
-    default=784,
-    metavar="df",
-    help="Number of dictionary features.",
-)
-parser.add_argument(
     "--lca_lambda", type=float, default=0.25, metavar="ll", help="LCA lambda."
 )
 parser.add_argument("--tau", type=int, default=100, metavar="tau", help="LCA tau.")
@@ -253,10 +246,8 @@ print(
     args.betas,
 )
 if args.model == "EPLCACNN":
-    print("\n\tn_feats\tlca_lambda\ttau\teta\tlca_stride\tlca_ksize\tlca_iters")
+    print("\n\tlca_lambda\ttau\teta\tlca_stride\tlca_ksize\tlca_iters")
     print(
-        "\t",
-        args.n_feats,
         "\t",
         args.lca_lambda,
         "\t",
@@ -436,6 +427,8 @@ elif args.act == "my_hard_sig":
     activation = my_hard_sig
 elif args.act == "ctrd_hard_sig":
     activation = ctrd_hard_sig
+elif args.act == "my_relu":
+    activation = my_relu
 
 if args.loss == "mse":
     criterion = torch.nn.MSELoss(reduction="none").to(device)
@@ -521,7 +514,7 @@ if args.load_path == "":
                 softmax=args.softmax,
             )
 
-        elif args.model == "EPLCACNN":
+        elif args.model == "EPLCACNN": # EP and BPTT
             # Add LCA Layer in front of model
             lca = LCAConv2D(
                 args.channels[0],
@@ -556,10 +549,9 @@ if args.load_path == "":
                 lca=lca,
             )
 
-        elif args.model == "BPLCACNN":
+        elif args.model == "BPLCACNN": # BPTT
             channels = args.channels
 
-            # Add LCA Layer in front of model
             lca = LCAConv2D(
                 args.channels[0],
                 3,
@@ -730,7 +722,7 @@ if args.todo == "train":
         createHyperparametersFile(path, args, model, command_line)
 
     if args.alg =="EP":
-        train_ep(
+        train_eplcanet(
             model,
             optimizer,
             train_loader,
@@ -752,8 +744,9 @@ if args.todo == "train":
             scheduler=scheduler,
             cep_debug=args.cep_debug,
         )
+        
     elif args.alg == "BP":
-        train_bp_clean(
+        train_bp(
             model,
             optimizer,
             train_loader,
@@ -775,8 +768,9 @@ if args.todo == "train":
             scheduler=scheduler,
             cep_debug=args.cep_debug,
         )
+        
     elif args.alg == "BPTT":
-        train_bptt(
+        train_bpttlcanet(
             model,
             optimizer,
             train_loader,

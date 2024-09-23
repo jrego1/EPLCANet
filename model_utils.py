@@ -30,11 +30,9 @@ characteristic_time = np.zeros((250, 2))
 characteristic_param = 0
 attack_param = 0
 
-
-# Activation functions
+# Activation functions (WHY are the activation functions like this? Is it critical for EP dynamics?)
 def my_sigmoid(x):
     return 1 / (1 + torch.exp(-4 * (x - 0.5)))
-
 
 def hard_sigmoid(x):
     return (1 + F.hardtanh(2 * x - 1)) * 0.5
@@ -47,8 +45,9 @@ def ctrd_hard_sig(x):
 def my_hard_sig(x):
     return (1 + F.hardtanh(x - 1)) * 0.5
 
+def my_relu(x): #JR
+    return (F.relu(x))
 
-# Some helper functions
 def grad_or_zero(x):
     if x.grad is None:
         return torch.zeros_like(x).to(x.device)
@@ -132,9 +131,234 @@ def my_init(scale):
 
     return my_scaled_init
 
+class BPLCANet(nn.Module):
+    def __init__(        
+                 self,
+                in_size,
+                channels,
+                kernels,
+                strides,
+                fc,
+                pools,
+                unpools,
+                paddings,
+                activation=hard_sigmoid,
+                softmax=False,
+                lca=None,
+                dict_loss="recon",
+        ):
+        super(BPLCANet, self).__init__()
+
+        # Dimensions used to initialize neurons
+        self.in_size = in_size
+        self.channels = channels
+        self.kernels = kernels
+        self.strides = strides
+        self.paddings = paddings
+        self.fc = fc
+        self.nc = fc[-1]
+
+        self.lca_channels = channels[0]
+        self.conv_channels = channels[1:]
+
+        self.activation = activation
+        self.pools = pools
+        self.unpools = unpools
+        self.dict_loss = dict_loss
+        self.poolidxs = []
+
+        self.softmax = softmax  # whether to use softmax readout or not
+        size = in_size  # size of the input : 32 for cifar10
+
+        self.synapses = torch.nn.ModuleList()
+
+        self.synapses.append(lca)
+        size = int(
+            (size + 2 * paddings[0] - kernels[0]) / strides[0] + 1
+        )  # size after lca layer
+        size = int((size - pools[0].kernel_size) / pools[0].stride + 1)
+        for idx in range(
+            1, len(channels) - 1
+        ):  # Don't define new conv layer with LCA channels
+            self.synapses.append(
+                torch.nn.Conv2d(
+                    channels[idx],
+                    channels[idx + 1],
+                    kernels[idx],
+                    stride=strides[idx],
+                    padding=paddings[idx],
+                    bias=True,
+                )
+            )
+
+            size = int(
+                (size + 2 * paddings[idx] - kernels[idx]) / strides[idx] + 1
+            )  # size after conv
+            if self.pools[idx].__class__.__name__.find("Pool") != -1:
+                size = int(
+                    (size - pools[idx].kernel_size) / pools[idx].stride + 1
+                )  # size after Pool
+
+        size = size * size * channels[-1]
+
+        fc_layers = [size] + fc
+        for idx in range(len(fc)):
+            self.synapses.append(
+                torch.nn.Linear(fc_layers[idx], fc_layers[idx + 1], bias=True)
+            )
+
+    def init_poolidxs(self, mbs, device):
+
+        self.poolidxs = []
+        append = self.poolidxs.append
+        size = self.in_size 
+
+        for idx in range(len(self.channels) - 1):
+            size = int(
+                (size + 2 * self.paddings[idx] - self.kernels[idx]) / self.strides[idx]
+                + 1
+            )  # size after conv
+            if self.pools[idx].__class__.__name__.find("Pool") != -1:
+                size = int(
+                    (size - self.pools[idx].kernel_size) / self.pools[idx].stride + 1
+                )  # size after Pool
+            append(
+                torch.zeros((mbs, self.channels[idx + 1], size, size), device=device)
+            )
+
+        size = size * size * self.channels[-1]
+
+        if not self.softmax:
+            for idx in range(len(self.fc)):
+                append(torch.zeros((mbs, self.fc[idx]), device=device))
+        else:
+            # we *REMOVE* the output layer from the system
+            for idx in range(len(self.fc) - 1):
+                append(torch.zeros((mbs, self.fc[idx]), device=device))
+
+        return
+
+    def init_neurons(self, mbs, device):
+        neurons = []
+        append = neurons.append
+        size = self.in_size
+
+        for idx in range(len(self.channels) - 1):
+            size = int(
+                (size + 2 * self.paddings[idx] - self.kernels[idx]) / self.strides[idx]
+                + 1
+            )  # size after conv
+            if self.pools[idx].__class__.__name__.find("Pool") != -1:
+                size = int(
+                    (size - self.pools[idx].kernel_size) / self.pools[idx].stride + 1
+                )  # size after Pool
+            append(
+                torch.zeros(
+                    (mbs, self.channels[idx + 1], size, size),
+                    requires_grad=True,
+                    device=device,
+                )
+            )
+
+        size = size * size * self.channels[-1]
+
+        if not self.softmax:
+            for idx in range(len(self.fc)):
+                append(
+                    torch.zeros((mbs, self.fc[idx]), requires_grad=True, device=device)
+                )
+        else:
+            # we *REMOVE* the output layer from the system
+            for idx in range(len(self.fc) - 1):
+                append(
+                    torch.zeros((mbs, self.fc[idx]), requires_grad=True, device=device)
+                )
+
+        return neurons
+    
+    def forward(
+        self,
+        x,
+        y=0,
+        neurons=None,
+        T=29,
+        beta=0.0,
+        criterion=torch.nn.MSELoss(reduction="none"),
+        check_thm=False,
+    ):
+        global characteristic_param, characteristic_time, attack_param
+        if attack_param == 1:
+            neurons = self.init_neurons(x.size(0), x.device)
+
+        not_mse = criterion.__class__.__name__.find("MSE") == -1
+        mbs = x.size(0)
+        conv_len = len(self.kernels)
+        tot_len = len(self.synapses)
+        device = x.device
+        self.poolsidx = self.init_poolidxs(mbs, x.device)
+        recon_error = None
+
+        unpools = make_unpools('mmmmm')
+        for idx in range(len(self.pools)):
+            self.pools[idx].return_indices = True
+            
+        layers = [x] + neurons
+        new_layers = []  # tendency of neurons
+
+        for neuron in neurons:  # exclude input layer
+            new_layers.append(torch.zeros_like(neuron, device=x.device))
+        for t in range(T):
+            cost = 0
+            for idx in range(conv_len):
+                # Process each layer activations with synapses and pooling (result = new_layers)
+                if isinstance(self.synapses[idx], LCAConv2D):
+                    if t == 0:
+                        lca_acts, recon_error, states = self.synapses[idx](layers[idx])
+                    else:
+                        lca_acts, recon_error, states = self.synapses[idx](layers[idx], initial_states=states) 
+                    #print((lca_acts != 0).float().mean())
+                    new_layers[idx], self.poolidxs[idx] = self.pools[idx](lca_acts)
+                else:
+                    new_layers[idx], self.poolidxs[idx] = self.pools[idx](self.synapses[idx](layers[idx]))
+ 
+            #for idx in range(1, conv_len - 1):
+                # For each convolutional layer, update with transpose convolution
+            #     if (
+            #        unpools[idx].__class__.__name__.find("Pool") != -1
+            #    ):  # If max pool layer
+            #        new_layers[idx] = new_layers[idx] + F.conv_transpose2d(
+            #            unpools[idx](layers[idx + 2], self.poolidxs[idx + 1]),
+            #            self.synapses[idx + 1].weight,
+            #            padding=self.paddings[idx + 1],
+            #        )
+            #    else:
+            #        new_layers[idx] = new_layers[idx]
+            #if tot_len - conv_len != 1:
+            #    new_layers[conv_len - 1] = new_layers[conv_len - 1] + torch.matmul(
+            #        layers[conv_len + 1], self.synapses[conv_len].weight
+            #    ).reshape(new_layers[conv_len - 1].shape)
+            if self.softmax: # Apply last layer?
+                for idx in range(conv_len, tot_len - 1):
+                    new_layers[idx] = self.synapses[idx](
+                        layers[idx].view(mbs, -1)
+                    )  # + torch.matmul(layers[idx+1],self.synapses[idx+1].weight.T)
+                #for idx in range(conv_len, tot_len - 2): # !!! range(2, 1)
+                #    new_layers[idx] = new_layers[idx] + torch.matmul(
+                #        layers[idx + 2], self.synapses[idx + 1].weight
+                #    )
+                    
+            for idx in range(tot_len - 1):
+                layers[idx + 1] = self.activation(new_layers[idx]).detach()
+                layers[idx + 1].requires_grad = True
+
+        if recon_error is not None:
+            return layers[1:], recon_error, lca_acts
+        else:
+            return layers[1:]
+
 
 # Convolutional Neural Network
-class BPLCANet(nn.Module):
+class LCANet(nn.Module):
     def __init__(        
                  self,
                 in_size,
@@ -203,8 +427,6 @@ class BPLCANet(nn.Module):
 
         for idx in range(len(fc)):
             self.synapses.append(torch.nn.Linear(fc_layers[idx], fc_layers[idx + 1], bias=True))
-
-        
     def forward(self, x):
         lca_acts, recon_error, states = self.synapses[0](x)  # Pass through the LCAConv2D layer
         x = self.activation(self.bn(lca_acts))
@@ -217,7 +439,7 @@ class BPLCANet(nn.Module):
         #x = self.synapses[2](x)  # Pass through the fully connected layer (applied in train)
     
         return x, recon_error, lca_acts
-
+    
 class P_CNN(torch.nn.Module):
     def __init__(
         self,
@@ -596,9 +818,7 @@ class P_CNN(torch.nn.Module):
         delta_phi.backward()  # p.grad = -(d_Phi_2/dp - d_Phi_1/dp)/(beta_2 - beta_1) ----> dL/dp  by the theorem
 
 
-# Equilibrium Propagation LCANet
-
-
+# LCANet for Equilibrium Propagation
 class EPLCANet(torch.nn.Module):
     def __init__(
         self,
@@ -787,35 +1007,19 @@ class EPLCANet(torch.nn.Module):
             # the output layer used for the prediction is no longer part of the system ! Summing until len(self.synapses) - 1 only
             for idx in range(conv_len): # LCA is counted in conv_len
                 if isinstance(self.synapses[idx], LCAConv2D):
-                    acts, recon_error, states = self.synapses[idx](
-                        layers[idx]
-                    )
+                    acts, recon_error, states = self.synapses[idx](layers[idx])
                 else:
                     acts = self.synapses[idx](layers[idx])
 
-                phi = (
-                    phi
-                    + torch.sum(
-                        (self.pools[idx](acts)) * layers[idx + 1], dim=(1, 2, 3)
-                    ).squeeze()
-                )
+                phi = (phi + torch.sum((self.pools[idx](acts)) * layers[idx + 1], dim=(1, 2, 3)).squeeze())
 
             for idx in range(conv_len, tot_len - 1):
-
-                phi = (
-                    phi
-                    + torch.sum(
-                        self.synapses[idx](layers[idx].view(mbs, -1)) * layers[idx + 1],
-                        dim=1,
-                    ).squeeze()
-                )
+                phi = (phi + torch.sum(self.synapses[idx](layers[idx].view(mbs, -1)) * layers[idx + 1],dim=1,).squeeze())
 
             # the prediction is made with softmax[last weights[penultimate layer]]
             if beta != 0.0:
                 # Loss from last layer
-                L = criterion(
-                    self.synapses[-1](layers[-1].view(mbs, -1)).float(), y
-                ).squeeze()
+                L = criterion(self.synapses[-1](layers[-1].view(mbs, -1)).float(), y).squeeze()
                 phi = phi - beta * L
 
         return phi
@@ -840,13 +1044,13 @@ class EPLCANet(torch.nn.Module):
         tot_len = len(self.synapses)
         device = x.device
         self.poolsidx = self.init_poolidxs(mbs, x.device)
-        recon_error = None
 
-        unpools = make_unpools("immmm")
+        unpools = make_unpools('mmmmm')
         for idx in range(len(self.pools)):
             self.pools[idx].return_indices = True
 
         # poolidxs = [[] for i in range(len(self.pools))]
+
         layers = [x] + neurons
         new_layers = []  # tendency of neurons
         # new_layers = [torch.zeros_like(neuron, device=x.device) for neuron in neurons]
@@ -867,56 +1071,24 @@ class EPLCANet(torch.nn.Module):
                     new_layers[idx], self.poolidxs[idx] = self.pools[idx](self.synapses[idx](layers[idx]))
  
             # Update LCA layer with EP feedback term from CNN layer (layer 1) to LCA layer (layer 0)
-            
-            
-            # layer_0 = layer_0 + F.conv_transpose2d(unpools[idx](layers[idx + 2], self.poolidxs[idx + 1], self.synapses[idx + 1], self.paddings[idx + 1])
-            
-            #print(f'lca states: {states.shape}') #[128, 128, 30, 30]
-            #print(f'new_layers[0] (lca): {new_layers[0].shape}') #[128, 128, 30, 30]
-            #print(f'new_layers[1] (conv1): {new_layers[1].shape}') #[128, 128, 15, 15]
-            #print(f'synapses (conv1): {self.synapses[1].weight.shape}') #[256, 128, 3, 3]
-            
-            # Works if I use unpools[1](maxpool), rather than unpools[0](identity)
-            # new_layers[0] are LCA neurons
-            
-            new_layers[0] = new_layers[0] + F.conv_transpose2d(unpools[1](layers[2], self.poolidxs[1].to(x.device)),
-                                                 self.synapses[1].weight, padding=self.paddings[1])
+            new_layers[0] = new_layers[0] + F.conv_transpose2d(unpools[1](layers[2], self.poolidxs[1].to(x.device)), self.synapses[1].weight, padding=self.paddings[1])
 
-        
-            for idx in range(1, conv_len - 1):
-                # Update LCA layer with EP feedback term from CNN layer to LCA layer 
-                # For each convolutional layer, update with transpose convolution
-                if (
-                    unpools[idx].__class__.__name__.find("Pool") != -1
-                ):  # If max pool layer
-                    new_layers[idx] = new_layers[idx] + F.conv_transpose2d(
-                        unpools[idx](layers[idx + 2], self.poolidxs[idx + 1]),
-                        self.synapses[idx + 1].weight,
-                        padding=self.paddings[idx + 1],
-                    )
+            for idx in range(conv_len - 1): 
+                # For each convolutional layer, update with transpose convolution (update LCA layer?)
+                if (unpools[idx].__class__.__name__.find("Pool") != -1):  # If max pool layer
+                    new_layers[idx] = new_layers[idx] + F.conv_transpose2d(unpools[idx](layers[idx + 2], self.poolidxs[idx + 1]),self.synapses[idx + 1].weight,padding=self.paddings[idx + 1])
                 else:
                     new_layers[idx] = new_layers[idx]
             if tot_len - conv_len != 1:
-                new_layers[conv_len - 1] = new_layers[conv_len - 1] + torch.matmul(
-                    layers[conv_len + 1], self.synapses[conv_len].weight
-                ).reshape(new_layers[conv_len - 1].shape)
+                new_layers[conv_len - 1] = new_layers[conv_len - 1] + torch.matmul(layers[conv_len + 1], self.synapses[conv_len].weight).reshape(new_layers[conv_len - 1].shape)
             if self.softmax:
                 for idx in range(conv_len, tot_len - 1):
-                    new_layers[idx] = self.synapses[idx](
-                        layers[idx].view(mbs, -1)
-                    )  # + torch.matmul(layers[idx+1],self.synapses[idx+1].weight.T)
+                    new_layers[idx] = self.synapses[idx](layers[idx].view(mbs, -1))  # + torch.matmul(layers[idx+1],self.synapses[idx+1].weight.T)
                 for idx in range(conv_len, tot_len - 2): # !!! range(2, 1)
-                    new_layers[idx] = new_layers[idx] + torch.matmul(
-                        layers[idx + 2], self.synapses[idx + 1].weight
-                    )
+                    new_layers[idx] = new_layers[idx] + torch.matmul(layers[idx + 2], self.synapses[idx + 1].weight)
                 if beta != 0.0:
-                    y_hat = F.softmax(
-                        self.synapses[-1](layers[-1].view(x.size(0), -1)), dim=1
-                    )
-                    cost = beta * torch.matmul(
-                        (F.one_hot(y, num_classes=self.nc) - y_hat),
-                        self.synapses[-1].weight,
-                    )
+                    y_hat = F.softmax(self.synapses[-1](layers[-1].view(x.size(0), -1)), dim=1)
+                    cost = beta * torch.matmul((F.one_hot(y, num_classes=self.nc) - y_hat),self.synapses[-1].weight,)
                     cost = cost.reshape(layers[-1].shape)
             for idx in range(tot_len - 1):
                 if idx == tot_len - 2 and beta != 0:
@@ -925,15 +1097,13 @@ class EPLCANet(torch.nn.Module):
                     layers[idx + 1] = self.activation(new_layers[idx]).detach()
                 layers[idx + 1].requires_grad = True
 
-        if recon_error is not None:
-            return layers[1:], recon_error, lca_acts
-        else:
-            return layers[1:]
+
+        return layers[1:], recon_error, lca_acts
+        #else:
+        #    return layers[1:]
         
 
-    def compute_syn_grads(
-        self, x, y, neurons_1, neurons_2, betas, criterion, check_thm=False
-    ):
+    def compute_syn_grads(self, x, y, neurons_1, neurons_2, betas, criterion, check_thm=False):
         beta_1, beta_2 = betas
         for idx in range(len(self.pools)):
             self.pools[idx].return_indices = False
@@ -969,25 +1139,13 @@ def check_gdu(model, x, y, T1, T2, betas, criterion, alg="EP"):
     # We first compute BPTT gradients
     # First phase up to T1-T2
     beta_1, beta_2 = betas
-    if isinstance(model, EPLCANet):
-        neurons, recon_errors, lca_acts = model(
-            x, y, neurons, T1 - T2, beta=beta_1, criterion=criterion
-        )
-    else:
-        neurons = model(x, y, neurons, T1 - T2, beta=beta_1, criterion=criterion)
 
+    neurons, recon_errors, lca_acts = model(x, y, neurons, T1 - T2, beta=beta_1, criterion=criterion)
     ref_neurons = copy(neurons)
 
     # Last steps of the first phase
     for K in range(T2 + 1):
-        if isinstance(model, EPLCANet):
-            neurons, recon_errors, lca_acts = model(
-                x, y, neurons, K, beta=beta_1, criterion=criterion
-            )
-        else:
-            neurons = model(
-                x, y, neurons, K, beta=beta_1, criterion=criterion
-            )  # Running K time step
+        neurons, recon_errors, lca_acts = model(x, y, neurons, K, beta=beta_1, criterion=criterion) # Running K time step
 
         # detach data and neurons from the graph
         x = x.detach()
@@ -995,35 +1153,20 @@ def check_gdu(model, x, y, T1, T2, betas, criterion, alg="EP"):
         leaf_neurons = []
         for idx in range(len(neurons)):
             print("neurons_" + str(idx), neurons[idx].shape)
-            neurons[idx] = neurons[
-                idx
-            ].detach()  # added .clone to fix in-place error (JR)
+            neurons[idx] = neurons[idx].detach()  # added .clone to fix in-place error (JR)
             neurons[idx].requires_grad = True
             leaf_neurons.append(neurons[idx])
 
-        if isinstance(model, EPLCANet):
-            neurons, recon_errors, lca_acts = model(
-                x, y, neurons, T2 - K, beta=beta_1, criterion=criterion, check_thm=True
-            )
-
-        else:
-            neurons = model(
-                x, y, neurons, T2 - K, beta=beta_1, criterion=criterion, check_thm=True
-            )  # T2-K time step
+        neurons, recon_errors, lca_acts = model(x, y, neurons, T2 - K, beta=beta_1, criterion=criterion, check_thm=True) # T2-K time step
 
         # final loss
         if criterion.__class__.__name__.find("MSE") != -1:
-            loss = (1 / (2.0 * x.size(0))) * criterion(
-                neurons[-1].float(), F.one_hot(y, num_classes=model.nc).float()
-            ).sum(dim=1).squeeze()
+            loss = (1 / (2.0 * x.size(0))) * criterion(neurons[-1].float(), F.one_hot(y, num_classes=model.nc).float()).sum(dim=1).squeeze()
         else:
             if not model.softmax:
                 loss = (1 / (x.size(0))) * criterion(neurons[-1].float(), y).squeeze()
             else:
-
-                loss = (1 / (x.size(0))) * criterion(
-                    model.synapses[-1](neurons[-1].view(x.size(0), -1)).float(), y
-                ).squeeze()
+                loss = (1 / (x.size(0))) * criterion(model.synapses[-1](neurons[-1].view(x.size(0), -1)).float(), y).squeeze()
 
         # setting gradients field to zero before backward
         neurons_zero_grad(leaf_neurons)
@@ -1130,7 +1273,7 @@ def debug(model, prev_p, optimizer):
         # optimizer.param_groups[i]['weight_decay'] = prev_p['wds'+str(i)]
     optimizer.step()
 
-def train_ep(
+def train_eplcanet(
     model,
     optimizer,
     train_loader,
@@ -1167,7 +1310,6 @@ def train_ep(
         test_acc = [10.0]
         best = 0.0
         epoch_sofar = 0
-        angles = [90.0]
     else:
         train_recon_err, test_recon_err = (
                 checkpoint["train_recon_err"],
@@ -1183,17 +1325,14 @@ def train_ep(
 
         best = checkpoint["best"]
         epoch_sofar = checkpoint["epoch"]
-        angles = checkpoint["angles"] if "angles" in checkpoint.keys() else []
 
     for epoch in range(epochs):
         run_correct = 0
         run_total = 0
         model.train()
 
-        for idx, (x, y) in enumerate(train_loader):
-            # setting gradients field to zero before backward
-            model.zero_grad()
-            optimizer.zero_grad()
+        for idx, (x, y) in enumerate(train_loader):       
+            #optimizer.zero_grad()
 
             x, y = x.to(device), y.to(device)
             
@@ -1201,8 +1340,10 @@ def train_ep(
                 model.synapses[0].normalize_weights()
 
             neurons = model.init_neurons(x.size(0), device)
-
+            
+            # First phase
             neurons, recon_errors, lca_acts = model(x, y, neurons, T1, beta=beta_1, criterion=criterion)
+            
             
             recon_errors_1 = copy(recon_errors)
             lca_sparsity_1 = (lca_acts != 0).float().mean().item()
@@ -1229,35 +1370,57 @@ def train_ep(
                 beta_1, beta_2 = betas
 
             neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta=beta_2, criterion=criterion)
+                
             recon_error_2 = copy(recon_errors)
             lca_sparsity_2 = (lca_acts != 0).float().mean().item()
-
             neurons_2 = copy(neurons)
             
-            print(f'LCA weight before compute_syn_grads ({dict_loss}): ', model.synapses[0].weights[0][0][0])
-
+            #print(f'LCA weight before step ({dict_loss}): ', model.synapses[0].weights[0][0][0])                
+            #print(f'Conv layer weight before step: ', model.synapses[1].weight[0][0][0])
+            #print(f'Last layer weight before step: ', model.synapses[-1].weight[0][0])
+            
             # Third phase (if we approximate f' as f'(x) = (f(x+h) - f(x-h))/2h)
             if thirdphase:
                 # come back to the first equilibrium
                 neurons = copy(neurons_1)
                 neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta=-beta_2, criterion=criterion)
+                    
                 recon_error_3 = copy(recon_errors)
-                
+                lca_sparsity_3 = (lca_acts != 0).float().mean().item()
                 neurons_3 = copy(neurons)
-
-                # EP weight update
+                
+                # EP weight computation
                 model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, -beta_2), criterion)
             else:
                 model.compute_syn_grads(x, y, neurons_1, neurons_2, betas, criterion)
-
-            # EP supervised update
+                
+            log_gradients(model)
+            # EP supervised weight update
             optimizer.step()
-            print(f'LCA weight after step ({dict_loss}): ', model.synapses[0].weights[0][0][0])                
+            
+            if thirdphase:  # JR (was missing before 9/22)  
+                neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta = 0.0, criterion=criterion) # come back to s*
+                neurons_2 = copy(neurons)
+                print(neurons)
+                for k in range(T2):
+                    neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta = 0.0, criterion=criterion) 
+               
+                    recon_errors = copy(recon_errors)
+                    lca_sparsity = (lca_acts != 0).float().mean().item()  
+                    neurons_3 = copy(neurons)
+                    model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, -beta_2), criterion)
+                    optimizer.step()
+                    neurons_2 = copy(neurons)
+            
+            print(recon_errors)
+            #print(f'LCA weight after step ({dict_loss}): ', model.synapses[0].weights[0][0][0])                
+            #print(f'Conv layer weight after step: ', model.synapses[1].weight[0][0][0])
+            #print(f'Last layer weight after step: ', model.synapses[-1].weight[0][0])
 
             # EP unsupervised dictionary update
             if (dict_loss == "recon" or dict_loss == "combo"):  # Update LCA weights using activations and reconstructions from first phase  
                 model.synapses[0].update_weights(lca_acts, recon_errors)
-                #print(f'Weights after update_weights ({dict_loss}): ',model.synapses[0].weights[0][0][0])
+                print(f'LCA weights after update_weights ({dict_loss}): ',model.synapses[0].weights[0][0][0])
             
             if (idx % (iter_per_epochs // 10) == 0) or (idx == iter_per_epochs - 1):
                 run_acc = run_correct / run_total
@@ -1278,18 +1441,17 @@ def train_ep(
         if scheduler is not None:  # learning rate decay step
             if epoch + epoch_sofar < scheduler.T_max:
                 scheduler.step()
-        test_correct, test_recon_errors, test_acts = evaluate(
-            model, test_loader, T1, device
-        )
+                
+        test_correct, test_recon_errors, test_acts = evaluate(model, test_loader, T1, device)
+        
         mean_test_sparsity = (test_acts != 0).float().mean().item()
         test_acc_t = test_correct / (len(test_loader.dataset))
+        
         if save:
             test_acc.append(100 * test_acc_t)
             train_acc.append(100 * run_acc)
 
-            train_recon_err.append(
-                recon_errors.mean().item()
-            )  # when alg==EP, which recon_errors_#?
+            train_recon_err.append(recon_errors.mean().item())  # when alg==EP, which recon_errors_#?
             test_recon_err.append(test_recon_errors.mean().item())
 
             train_sparsity.append(lca_sparsity_2)
@@ -1310,7 +1472,6 @@ def train_ep(
                     "test_sparsity": test_sparsity,
                 }
                 
-                save_dic["angles"] = angles
                 save_dic["scheduler"] = (
                     scheduler.state_dict() if scheduler is not None else None
                 )
@@ -1335,14 +1496,11 @@ def train_ep(
             "train_sparsity": train_sparsity,
             "test_sparsity": test_sparsity
         }
-        save_dic["angles"] = angles
-        save_dic["scheduler"] = (
-            scheduler.state_dict() if scheduler is not None else None
-        )
+        save_dic["scheduler"] = (scheduler.state_dict() if scheduler is not None else None)
         torch.save(save_dic, path + "/final_checkpoint.tar")
         torch.save(model, path + "/final_model.pt")
 
-def train_bptt(
+def train_bpttlcanet(
     model,
     optimizer,
     train_loader,
@@ -1377,21 +1535,13 @@ def train_bptt(
         test_acc = [10.0]
         best = 0.0
         epoch_sofar = 0
-        angles = [90.0]
     else:
-        train_recon_err, test_recon_err = (
-            checkpoint["train_recon_err"],
-            checkpoint["test_recon_err"],
-        )
-        train_sparsity, test_sparsity = (
-            checkpoint["train_sparsity"],
-            checkpoint["test_sparsity"],
-        )
+        train_recon_err, test_recon_err = (checkpoint["train_recon_err"],checkpoint["test_recon_err"])
+        train_sparsity, test_sparsity = (checkpoint["train_sparsity"], checkpoint["test_sparsity"])
         train_acc = checkpoint["train_acc"]
         test_acc = checkpoint["test_acc"]
         best = checkpoint["best"]
         epoch_sofar = checkpoint["epoch"]
-        angles = checkpoint["angles"] if "angles" in checkpoint.keys() else []
 
     for epoch in range(epochs):
         run_correct = 0
@@ -1405,27 +1555,26 @@ def train_bptt(
                 model.synapses[0].normalize_weights()
 
             neurons = model.init_neurons(x.size(0), device)
-                        
-            out, recon_errors, lca_acts = model(x, y, neurons, T1-T2, beta=0.0, criterion=criterion)           
+            neurons, recon_errors, lca_acts = model(x, y, neurons, T1-T2, beta=0.0, criterion=criterion)   
+                    
             # detach data and neurons from the graph
             x = x.detach()
             x.requires_grad = True
             for k in range(len(neurons)):
-                out[k] = out[k].detach()
-                out[k].requires_grad = True # How will this effect the
+                neurons[k] = neurons[k].detach()
+                neurons[k].requires_grad = True # Will prob effect training with only recon. change
 
-            out, recon_errors, lca_acts = model(x, y, neurons, T2, beta=0.0, criterion=criterion, check_thm=True) # T2 time step
+            neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta=0.0, criterion=criterion, check_thm=True) # T2 time step
         
             lca_sparsity = (lca_acts != 0).float().mean().item()
                 
             # Predictions for running accuracy
             with torch.no_grad():
                 if not model.softmax:
-                    pred = torch.argmax(out, dim=1).squeeze()
+                    pred = torch.argmax(neurons[-1], dim=1).squeeze()
                 else:
                     # WATCH OUT: prediction is different when softmax == True
-                    pred = torch.argmax(F.softmax(model.synapses[-1](out[-1].view(x.size(0), -1)), dim=1),dim=1,).squeeze()
-
+                    pred = torch.argmax(F.softmax(model.synapses[-1](neurons[-1].view(x.size(0), -1)), dim=1),dim=1,).squeeze()
 
                 run_correct += (y == pred).sum().item()
                 run_total += x.size(0)
@@ -1435,27 +1584,34 @@ def train_bptt(
 
             # final loss
             if criterion.__class__.__name__.find("MSE") != -1:
-                loss = (0.5 * criterion(out[-1].float(),F.one_hot(y, num_classes=model.nc).float(),).sum(dim=1).mean().squeeze())
+                loss = (0.5 * criterion(neurons[-1].float(),F.one_hot(y, num_classes=model.nc).float(),).sum(dim=1).mean().squeeze())
             else:
                 if not model.softmax:
-                    loss = criterion(out[-1].float(), y).mean().squeeze()
+                    loss = criterion(neurons[-1].float(), y).mean().squeeze()
                 else:
-                    loss = (criterion(model.synapses[-1](out[-1].view(x.size(0), -1)).float(),y,).mean().squeeze())
+                    loss = (criterion(model.synapses[-1](neurons[-1].view(x.size(0), -1)).float(),y,).mean().squeeze())
 
             #my_layer = model.synapses[0]
-            print(f'LCA weight before step ({dict_loss}): ', model.synapses[0].weights[0][0][0])                
+            #print(f'LCA weight before step ({dict_loss}): ', model.synapses[0].weights[0][0][0])                
+            #print(f'Conv layer weight before step: ', model.synapses[1].weight[0][0][0])
+            #print(f'Last layer weight before step: ', model.synapses[-1].weight[0][0])
             #print(f'lca layer acts: {(lca_acts != 0).float().mean().item()}')
             #print(all(param.requires_grad for param in my_layer.parameters()))
             
             # setting gradients field to zero before backward
             model.zero_grad()
-            optimizer.zero_grad()
+            #optimizer.zero_grad()
+            
+            log_gradients(model)
             
             loss.backward() # for all dict_loss types (class, combo, recon)
             optimizer.step()
             
-            print(f'LCA weights after step ({dict_loss}): ', model.synapses[0].weights[0][0][0])
-            
+            #print(f'LCA weights after step ({dict_loss}): ', model.synapses[0].weights[0][0][0])
+            #print(f'Conv layer weight after step: ', model.synapses[1].weight[0][0][0][0])
+            #print(f'Last layer weight before step: ', model.synapses[-1].weight[0][0])
+
+
             if dict_loss == "recon" or dict_loss == "combo":
                 model.synapses[0].update_weights(
                     lca_acts, recon_errors
@@ -1517,7 +1673,6 @@ def train_bptt(
                     "train_sparsity": train_sparsity,
                     "test_sparsity": test_sparsity,
                 }
-                save_dic["angles"] = angles
                 save_dic["scheduler"] = (
                     scheduler.state_dict() if scheduler is not None else None
                 )
@@ -1568,7 +1723,6 @@ def train_bptt(
             "train_sparsity": train_sparsity,
             "test_sparsity": test_sparsity
         }
-        save_dic["angles"] = angles
         save_dic["scheduler"] = (scheduler.state_dict() if scheduler is not None else None)
         torch.save(save_dic, path + "/final_checkpoint.tar")
         torch.save(model, path + "/final_model.pt")
@@ -1609,7 +1763,6 @@ def train_bp(
         test_acc = [10.0]
         best = 0.0
         epoch_sofar = 0
-        angles = [90.0]
     else:
         train_recon_err, test_recon_err = (
             checkpoint["train_recon_err"],
@@ -1623,7 +1776,6 @@ def train_bp(
         test_acc = checkpoint["test_acc"]
         best = checkpoint["best"]
         epoch_sofar = checkpoint["epoch"]
-        angles = checkpoint["angles"] if "angles" in checkpoint.keys() else []
 
     for epoch in range(epochs):
         run_correct = 0
@@ -1723,7 +1875,6 @@ def train_bp(
                     "train_sparsity": train_sparsity,
                     "test_sparsity": test_sparsity,
                 }
-                save_dic["angles"] = angles
                 save_dic["scheduler"] = (
                     scheduler.state_dict() if scheduler is not None else None
                 )
@@ -1774,7 +1925,6 @@ def train_bp(
             "train_sparsity": train_sparsity,
             "test_sparsity": test_sparsity
         }
-        save_dic["angles"] = angles
         save_dic["scheduler"] = (scheduler.state_dict() if scheduler is not None else None)
         torch.save(save_dic, path + "/final_checkpoint.tar")
         torch.save(model, path + "/final_model.pt")
@@ -1850,7 +2000,6 @@ def adv_train(
         train_recon_err = []
         best = 0.0
         epoch_sofar = 0
-        angles = [90.0]
     else:
         train_acc = checkpoint["train_acc"]
         test_acc = checkpoint["test_acc"]
@@ -1858,7 +2007,6 @@ def adv_train(
         test_recon_err = ["test_recon_err"]
         best = checkpoint["best"]
         epoch_sofar = checkpoint["epoch"]
-        angles = checkpoint["angles"] if "angles" in checkpoint.keys() else []
 
     for epoch in range(epochs):
         run_correct = 0
@@ -2053,12 +2201,7 @@ def adv_train(
         if scheduler is not None:  # learning rate decay step
             if epoch + epoch_sofar < scheduler.T_max:
                 scheduler.step()
-        if isinstance(model, EPLCANet):
-            test_correct, test_recon_err, test_acts = evaluate(
-                model, test_loader, T1, device
-            )
-        else:
-            test_correct = evaluate(model, test_loader, T1, device)
+        test_correct, test_recon_err, test_acts = evaluate(model, test_loader, T1, device)
         test_acc_t = test_correct / (len(test_loader.dataset))
         if save:
             test_acc.append(100 * test_acc_t)
@@ -2098,7 +2241,6 @@ def adv_train(
             "best": best,
             "epoch": epochs,
         }
-        save_dic["angles"] = angles
         save_dic["scheduler"] = (
             scheduler.state_dict() if scheduler is not None else None
         )
@@ -2115,20 +2257,17 @@ def evaluate(model, loader, T, device):
     start_time = time.time()
     for x, y in loader:
         x, y = x.to(device), y.to(device)
-        if isinstance(model, EPLCANet):
-            neurons = model.init_neurons(x.size(0), device)
-            neurons, recon_errors, lca_acts = model(x, y, neurons, T)
-            out = neurons[-1]
-        elif isinstance(model, BPLCANet):
-            out, recon_errors, lca_acts = model(x)
-            
+
+        neurons = model.init_neurons(x.size(0), device)
+        neurons, recon_errors, lca_acts = model(x, y, neurons, T)
+        
         if not model.softmax:
             pred = torch.argmax(
-                out, dim=1
+                neurons[-1], dim=1
             ).squeeze()  # in this cas prediction is done directly on the last (output) layer of neurons
         else:  # prediction is done as a readout of the penultimate layer (output is not part of the system)
             pred = torch.argmax(
-                F.softmax(model.synapses[-1](out.view(x.size(0), -1)), dim=1),
+                F.softmax(model.synapses[-1](neurons[-1].view(x.size(0), -1)), dim=1),
                 dim=1,
             ).squeeze()
 
@@ -2138,6 +2277,7 @@ def evaluate(model, loader, T, device):
             f"Running acc ({run_total}):", correct / (run_total * loader.batch_size)
         )  # ,time.time()-start_time)
     acc = correct / len(loader.dataset)
+    print(recon_errors)
     print(phase + " accuracy :\t", acc)
 
     print(phase + " recon_errors :\t", (recon_errors).mean().item())
