@@ -1045,7 +1045,7 @@ class EPLCANet(torch.nn.Module):
         device = x.device
         self.poolsidx = self.init_poolidxs(mbs, x.device)
 
-        unpools = make_unpools('mmmmm')
+        unpools = make_unpools('immmm')
         for idx in range(len(self.pools)):
             self.pools[idx].return_indices = True
 
@@ -1063,10 +1063,12 @@ class EPLCANet(torch.nn.Module):
                 if isinstance(self.synapses[idx], LCAConv2D):
                     if t == 0:
                         lca_acts, recon_error, states = self.synapses[idx](layers[idx])
+                        log_gradients(self)
                     else:
                         lca_acts, recon_error, states = self.synapses[idx](layers[idx], initial_states=states) 
                     #print((lca_acts != 0).float().mean())
                     new_layers[idx], self.poolidxs[idx] = self.pools[idx](lca_acts)
+                    
                 else:
                     new_layers[idx], self.poolidxs[idx] = self.pools[idx](self.synapses[idx](layers[idx]))
  
@@ -1097,17 +1099,17 @@ class EPLCANet(torch.nn.Module):
                     layers[idx + 1] = self.activation(new_layers[idx]).detach()
                 layers[idx + 1].requires_grad = True
 
-
         return layers[1:], recon_error, lca_acts
         #else:
         #    return layers[1:]
         
 
     def compute_syn_grads(self, x, y, neurons_1, neurons_2, betas, criterion, check_thm=False):
+        # Probably an issue here
         beta_1, beta_2 = betas
         for idx in range(len(self.pools)):
             self.pools[idx].return_indices = False
-        self.zero_grad()  # p.grad is zero
+        self.zero_grad()  # p.grad is zero (don't track anything but the gradient after the second and third phase)
         if not (check_thm):
             phi_1 = self.Phi(x, y, neurons_1, beta_1, criterion)
         else:
@@ -1385,8 +1387,8 @@ def train_eplcanet(
                 neurons = copy(neurons_1)
                 neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta=-beta_2, criterion=criterion)
                     
-                recon_error_3 = copy(recon_errors)
-                lca_sparsity_3 = (lca_acts != 0).float().mean().item()
+                recon_error = copy(recon_errors)
+                lca_sparsity = (lca_acts != 0).float().mean().item()
                 neurons_3 = copy(neurons)
                 
                 # EP weight computation
@@ -1394,25 +1396,11 @@ def train_eplcanet(
             else:
                 model.compute_syn_grads(x, y, neurons_1, neurons_2, betas, criterion)
                 
-            log_gradients(model)
+            #log_gradients(model)
+            
             # EP supervised weight update
             optimizer.step()
-            
-            if thirdphase:  # JR (was missing before 9/22)  
-                neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta = 0.0, criterion=criterion) # come back to s*
-                neurons_2 = copy(neurons)
-                print(neurons)
-                for k in range(T2):
-                    neurons, recon_errors, lca_acts = model(x, y, neurons, T2, beta = 0.0, criterion=criterion) 
-               
-                    recon_errors = copy(recon_errors)
-                    lca_sparsity = (lca_acts != 0).float().mean().item()  
-                    neurons_3 = copy(neurons)
-                    model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, -beta_2), criterion)
-                    optimizer.step()
-                    neurons_2 = copy(neurons)
-            
-            print(recon_errors)
+        
             #print(f'LCA weight after step ({dict_loss}): ', model.synapses[0].weights[0][0][0])                
             #print(f'Conv layer weight after step: ', model.synapses[1].weight[0][0][0])
             #print(f'Last layer weight after step: ', model.synapses[-1].weight[0][0])
@@ -1420,23 +1408,13 @@ def train_eplcanet(
             # EP unsupervised dictionary update
             if (dict_loss == "recon" or dict_loss == "combo"):  # Update LCA weights using activations and reconstructions from first phase  
                 model.synapses[0].update_weights(lca_acts, recon_errors)
-                print(f'LCA weights after update_weights ({dict_loss}): ',model.synapses[0].weights[0][0][0])
+                print(f'LCA weights after update_weights ({dict_loss}): ', model.synapses[0].weights[0][0][0])
             
             if (idx % (iter_per_epochs // 10) == 0) or (idx == iter_per_epochs - 1):
                 run_acc = run_correct / run_total
-                print(
-                    "Epoch :",
-                    round(epoch_sofar + epoch + (idx / iter_per_epochs), 2),
-                    "\tRun train acc :",
-                    round(run_acc, 3),
-                    "\t(" + str(run_correct) + "/" + str(run_total) + ")\t",
-                    timeSince(
-                        start,
-                        ((idx + 1) + epoch * iter_per_epochs)
-                        / (epochs * iter_per_epochs),
-                    ),
-                )
-                print(f"Avg recon error {(recon_errors).mean().item()}\tActivation sparsity: {lca_sparsity_2}, ")
+                print("Epoch :",round(epoch_sofar + epoch + (idx / iter_per_epochs), 2),"\tRun train acc :", round(run_acc, 3),
+                    "\t(" + str(run_correct) + "/" + str(run_total) + ")\t",timeSince(start, ((idx + 1) + epoch * iter_per_epochs) / (epochs * iter_per_epochs),))
+                print(f"Avg recon error {recon_errors.mean()}\tActivation sparsity: {lca_sparsity}, ")
 
         if scheduler is not None:  # learning rate decay step
             if epoch + epoch_sofar < scheduler.T_max:
@@ -1451,10 +1429,10 @@ def train_eplcanet(
             test_acc.append(100 * test_acc_t)
             train_acc.append(100 * run_acc)
 
-            train_recon_err.append(recon_errors.mean().item())  # when alg==EP, which recon_errors_#?
-            test_recon_err.append(test_recon_errors.mean().item())
+            train_recon_err.append(recon_errors.mean())  # when alg==EP, which recon_errors_#?
+            test_recon_err.append(test_recon_errors.mean())
 
-            train_sparsity.append(lca_sparsity_2)
+            train_sparsity.append(lca_sparsity)
             test_sparsity.append(mean_test_sparsity)
 
             if test_correct > best:
@@ -1613,9 +1591,7 @@ def train_bpttlcanet(
 
 
             if dict_loss == "recon" or dict_loss == "combo":
-                model.synapses[0].update_weights(
-                    lca_acts, recon_errors
-                ) 
+                model.synapses[0].update_weights(lca_acts, recon_errors) 
                 #print(f'Weights after update weights ({dict_loss}): ', model.synapses[0].weights[0][0][0])
 
 

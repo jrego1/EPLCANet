@@ -47,6 +47,13 @@ def half_sum(dic1, dic2):
         dic3[key] = (dic1[key] + dic2[key]) / 2
     return dic3
 
+def log_gradients(model):
+    for name, param in model.named_parameters():
+        if param.requires_grad: 
+            if param.grad is not None:
+                print(f"Layer {name} | Gradient Norm: {param.grad.norm()}")
+            else:
+                print(f"Layer {name} | no param.grad")
 
 def compare_estimate(bptt, ep_1, ep_2, path):
     # Compare the estimate of the BPTT with two different estimates from EP
