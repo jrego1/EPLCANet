@@ -234,7 +234,7 @@ class LCA_CNN(torch.nn.Module):
 
             for idx in range(1, conv_len):
                 phi = phi + torch.sum( self.pools[idx](self.synapses[idx](layers[idx])) * layers[idx+1], dim=(1,2,3)).squeeze()     
-            
+
             for idx in range(conv_len, tot_len-1):
                 phi = phi + torch.sum( self.synapses[idx](layers[idx].view(mbs,-1)) * layers[idx+1], dim=1).squeeze()
              
@@ -248,11 +248,9 @@ class LCA_CNN(torch.nn.Module):
     def forward(self, x, y, neurons, T, beta=0.0, criterion=torch.nn.MSELoss(reduction='none'), autograd=True, check_thm=False, return_lca=False):
  
         not_mse = (criterion.__class__.__name__.find('MSE')==-1)
-        mbs = x.size(0)
-        device = x.device     
+        mbs = x.size(0)   
         conv_len = len(self.kernels)
-        tot_len = len(self.synapses)
-        device = x.device     
+        tot_len = len(self.synapses)  
         self.poolsidx = self.init_poolidxs(mbs,x.device)
         
         for idx in range(len(self.pools)):
@@ -269,24 +267,25 @@ class LCA_CNN(torch.nn.Module):
         if autograd: # Forward function that I am using in train right now (9/29)
             for t in range(T):
                 phi = self.Phi(x, y, neurons, beta, criterion)
-
                 grads = torch.autograd.grad(phi, neurons, grad_outputs=self.init_grads, create_graph=False)
 
                 for idx in range(len(neurons)-1):
                     neurons[idx] = self.activation( grads[idx] )
                     neurons[idx].requires_grad = True
-             
-                if not_mse: #not_mse and not(self.softmax):
+
+                if not_mse and not(self.softmax):
                     neurons[-1] = grads[-1]
                 else:
                     neurons[-1] = self.activation( grads[-1] )
 
                 neurons[-1].requires_grad = True
                 
-            # How can I get the reconstruction error out of here...
-            final_recon_error = self.synapses[0].encode(neurons[-1])
-                
-            return neurons
+            if return_lca==True:
+                # Will this change anything about the internal status of LCA and mess up learning?
+                lca_acts, recon_error, states = self.synapses[0](layers[0])
+                return neurons, lca_acts, recon_error
+            else:
+                return neurons
         
         else: # Could not get this (faster implementation) to work yet
              for t in range(T):
@@ -325,26 +324,6 @@ class LCA_CNN(torch.nn.Module):
             return layers[1:], lca_acts, recon_error
         else:
             return layers[1:]
-    
-    def compute_syn_grads(self, x, y, neurons_1, neurons_2, betas, criterion, check_thm=False):
-        
-        beta_1, beta_2 = betas
-        for idx in range(len(self.pools)):
-            self.pools[idx].return_indices = False
-        self.zero_grad()            # p.grad is zero
-        if not(check_thm):
-            phi_1 = self.Phi(x, y, neurons_1, beta_1, criterion)
-        else:
-            phi_1 = self.Phi(x, y, neurons_1, beta_2, criterion)
-        
-        phi_1 = phi_1.mean()
-        
-        phi_2 = self.Phi(x, y, neurons_2, beta_2, criterion)
-        phi_2 = phi_2.mean()
-        delta_phi = (phi_2 - phi_1)/(beta_1 - beta_2)        
-        delta_phi.backward() # p.grad = -(d_Phi_2/dp - d_Phi_1/dp)/(beta_2 - beta_1) ----> dL/dp  by the theorem
-
-
  
 def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, epochs, criterion, alg='EP', 
           random_sign=False, save=False, check_thm=False, path='', checkpoint=None, thirdphase = False, scheduler=None, cep_debug=False, dict_loss='class'):
@@ -394,7 +373,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                 neurons[k] = neurons[k].detach()
                 neurons[k].requires_grad = True
 
-            neurons = model(x, y, neurons, T2, beta=0.0, criterion=criterion, autograd=True)#return_lca=True) # T2 time step
+            neurons, lca_acts, recon_errors = model(x, y, neurons, T2, beta=0.0, criterion=criterion, autograd=True, return_lca=True) # T2 time step
 
             # Predictions for running accuracy
             with torch.no_grad():
@@ -420,21 +399,23 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                     loss = criterion(model.synapses[-1](neurons[-1].view(x.size(0),-1)).float(), y).mean().squeeze()
             # setting gradients field to zero before backward
             model.zero_grad()
-            # log_gradients(model)
+            
             # Backpropagation through time
             loss.backward()
+            
+            log_gradients(model)
             optimizer.step()
         
             # Not returning LCA recon errors for now, will this compute it properly?
             
-            #if (dict_loss == "recon" or dict_loss == "combo"):  # Update LCA weights using activations and reconstructions from first phase  
+            if (dict_loss == "recon" or dict_loss == "combo"):  # Update LCA weights using activations and reconstructions from first phase  
                     #print(f'LCA weights before update_weights ({dict_loss}): ', model.synapses[0].weights[0][0][0])
-            #    model.synapses[0].update_weights(lca_acts, recon_errors)
+                model.synapses[0].update_weights(lca_acts, recon_errors)
 
                     #print(f'LCA weights after update_weights ({dict_loss}): ', model.synapses[0].weights[0][0][0])
             
-            lca_acts = neurons[0].detach()
-            recon_errors = np.array([0.0]) # Filler until I figure out how to get LCA things properly
+            #lca_acts = neurons[0].detach()
+            #recon_errors = np.array([0.0]) # Filler until I figure out how to get LCA things properly
             
             lca_sparsity = (lca_acts != 0).float().mean().item()
             
@@ -506,7 +487,7 @@ def evaluate(model, loader, T, device, return_lca=False, autograd=False):
         x, y = x.to(device), y.to(device)
         neurons = model.init_neurons(x.size(0), device)
         if autograd:
-            neurons = model(x, y, neurons, T, autograd=True)  
+            neurons, lca_acts, recon_errors = model(x, y, neurons, T, autograd=True, return_lca=True)  
         else:
             neurons, lca_acts, recon_errors = model(x, y, neurons, T, return_lca=True) # dynamics for T time steps
 
@@ -518,9 +499,6 @@ def evaluate(model, loader, T, device, return_lca=False, autograd=False):
         correct += (y == pred).sum().item()
 
     acc = correct/len(loader.dataset) 
-
-    lca_acts = neurons[0].detach()
-    recon_errors = np.array([0.0]) 
 
     print(phase+' accuracy :\t', acc, ' recon errors: ', recon_errors.mean(), 'sparsity: ', (lca_acts != 0).float().mean().item())   
     return correct, lca_acts, recon_errors

@@ -234,7 +234,6 @@ class P_CNN(torch.nn.Module):
         mbs = x.size(0)       
         conv_len = len(self.kernels)
         tot_len = len(self.synapses)
-        device = x.device     
         self.poolsidx = self.init_poolidxs(mbs,x.device)
         unpools = make_unpools('mmmm')
         for idx in range(len(self.pools)):
@@ -272,8 +271,8 @@ class P_CNN(torch.nn.Module):
                 
                 layers[idx+1].requires_grad = True
                 
-                
         return layers[1:]
+    
     def compute_syn_grads(self, x, y, neurons_1, neurons_2, betas, criterion, check_thm=False):
         
         beta_1, beta_2 = betas
@@ -322,9 +321,6 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
 
         for idx, (x, y) in enumerate(train_loader):
             x, y = x.to(device), y.to(device)
-            #if alg=='CEP' and cep_debug:
-            #    x = x.double()   
-    
             neurons = model.init_neurons(x.size(0), device)
             if alg=='EP' or alg=='CEP':
                 # First phase
