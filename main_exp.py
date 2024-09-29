@@ -275,10 +275,14 @@ device = torch.device(
     "cuda:" + str(args.device) if torch.cuda.is_available() else "cpu"
 )
 
-if args.model == "CNN":
+if args.model == "LCACNN":
+    if args.alg == "EP":
+        from lca_utils_ep import *
+    elif args.alg == "BPTT":
+        from lca_utils_bptt import *
+elif args.model == "CNN":
     from model_utils_fast import *
-else:
-    from lca_utils import *
+
 
 if args.save:
     date = datetime.now().strftime("%Y-%m-%d")
@@ -302,6 +306,10 @@ if args.save:
         path = args.load_path
     if not (os.path.exists(path)):
         print("Creating directory :", path)
+        os.makedirs(path)
+    else:
+        print("Directory already exists :", path)
+        path = path + 'run_' + str(len(os.listdir(path))) + '/'
         os.makedirs(path)
 else:
     path = ""
@@ -522,8 +530,8 @@ if args.load_path == "":
 
         elif args.model == "LCACNN": # EP and BPTT
             # Add LCA Layer in front of model
-            #channels = [3] + args.channels
-            channels = args.channels
+            channels = [3] + args.channels
+            #channels = args.channels
             lca = LCAConv2D(
                 args.channels[0],
                 3,
@@ -534,7 +542,7 @@ if args.load_path == "":
                 args.tau,
                 args.eta, # args.eta or args.lrs[0]?
                 args.lca_iters,
-                pad="valid",
+                pad="same",
                 return_vars=["acts", "recon_errors", "states"],
                 input_zero_mean=True,
                 input_unit_var=True,
@@ -634,11 +642,6 @@ if args.todo == "train":
 
     # Constructing the optimizer
     optim_params = []
-    if (args.alg == "CEP" and args.wds) and not (args.cep_debug):
-        for idx in range(len(model.synapses)):
-            args.wds[idx] = (1 - (1 - args.wds[idx] * 0.1) ** (1 / args.T2)) / args.lrs[
-                idx
-            ]
 
     for idx in range(len(model.synapses)):
         if args.wds is None:
@@ -786,14 +789,14 @@ elif args.todo == "evaluate":
     print(
         "\nTrain accuracy :",
         round(training_acc, 2),
-        file=open(path + "/hyperparameters.txt", "a"),
+        file=open(path + "hyperparameters.txt", "a"),
     )
     test_acc = evaluate(model, test_loader, args.T1, device)
     test_acc /= len(test_loader.dataset)
     print(
         "\nTest accuracy :",
         round(test_acc, 2),
-        file=open(path + "/hyperparameters.txt", "a"),
+        file=open(path + "hyperparameters.txt", "a"),
     )
 
 elif args.todo == "attack":
