@@ -1,5 +1,3 @@
-# Modified 9/23 from Siddharth's original, faster Laborieux Code (run with main_exp.py)
-
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,6 +14,7 @@ from data_utils import *
 from itertools import repeat
 from torch.nn.parameter import Parameter
 from lcapt.lca import LCAConv2D
+
 import collections
 import matplotlib
 from art.attacks.evasion.projected_gradient_descent.projected_gradient_descent_pytorch import ProjectedGradientDescentPyTorch
@@ -124,11 +123,8 @@ class LCA_CNN(torch.nn.Module):
 
         size = in_size # size of the input : 32 for cifar10
 
-        self.synapses = torch.nn.ModuleList()
-
         self.synapses.append(lca)
         
-
         # LCA is changing the size and number of channels before EP
         size = int((size + 2 * paddings[0] - kernels[0]) / strides[0] + 1)  # size after lca layer
         print('size after lca: ', size)
@@ -270,7 +266,7 @@ class LCA_CNN(torch.nn.Module):
             new_layers.append(torch.zeros_like(neuron, device=x.device))
         
         
-        if autograd:
+        if autograd: # Forward function that I am using in train right now (9/29)
             for t in range(T):
                 phi = self.Phi(x, y, neurons, beta, criterion)
 
@@ -286,28 +282,13 @@ class LCA_CNN(torch.nn.Module):
                     neurons[-1] = self.activation( grads[-1] )
 
                 neurons[-1].requires_grad = True
+                
+            # How can I get the reconstruction error out of here...
+            final_recon_error = self.synapses[0].encode(neurons[-1])
+                
             return neurons
         
-        if check_thm:
-            for t in range(T):
-                phi = self.Phi(x, y, neurons, beta, criterion)
-                init_grads = torch.tensor([1 for i in range(mbs)], dtype=torch.float, device=device, requires_grad=True) 
-                
-                # No aspect init_grads for LCA... compute LCA layer outside of autograd?
-                grads = torch.autograd.grad(phi, neurons, grad_outputs=init_grads, create_graph=True)
-
-                for idx in range(len(neurons)-1):
-                    neurons[idx] = self.activation( grads[idx] )
-                    neurons[idx].retain_grad()
-             
-                if not_mse and not(self.softmax):
-                    neurons[-1] = grads[-1]
-                else:
-                    neurons[-1] = self.activation( grads[-1] )
-
-                neurons[-1].retain_grad()
-            return neurons
-        else:
+        else: # Could not get this (faster implementation) to work yet
              for t in range(T):
                 if t == 0:
                 #print('lca_acts.grad.sum(): ', layers[0].grad.sum())
@@ -413,7 +394,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
                 neurons[k] = neurons[k].detach()
                 neurons[k].requires_grad = True
 
-            neurons = model(x, y, neurons, T2, beta=0.0, criterion=criterion, check_thm=True, autograd=True)#return_lca=True) # T2 time step
+            neurons = model(x, y, neurons, T2, beta=0.0, criterion=criterion, autograd=True)#return_lca=True) # T2 time step
 
             # Predictions for running accuracy
             with torch.no_grad():
@@ -444,6 +425,8 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, ep
             loss.backward()
             optimizer.step()
         
+            # Not returning LCA recon errors for now, will this compute it properly?
+            
             #if (dict_loss == "recon" or dict_loss == "combo"):  # Update LCA weights using activations and reconstructions from first phase  
                     #print(f'LCA weights before update_weights ({dict_loss}): ', model.synapses[0].weights[0][0][0])
             #    model.synapses[0].update_weights(lca_acts, recon_errors)

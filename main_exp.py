@@ -479,7 +479,7 @@ if args.load_path == "":
                 weight_init=(torch.nn.init.kaiming_uniform_, {}),
             )
         
-        if args.model == "EPLCACNN":
+        if args.model == "LCACNN":
             # Add LCA Layer in front of model
             model = LCA_CNN(
                 28,
@@ -531,7 +531,7 @@ if args.load_path == "":
         elif args.model == "LCACNN": # EP and BPTT
             # Add LCA Layer in front of model
             channels = [3] + args.channels
-            #channels = args.channels
+
             lca = LCAConv2D(
                 args.channels[0],
                 3,
