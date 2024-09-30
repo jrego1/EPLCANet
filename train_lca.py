@@ -86,7 +86,7 @@ def train_epoch(train_loader, model, optimizer, loss_fn, scheduler):
         y_hat, lca_acts, recon_errors = model(x.to(device=1))
         
         avg_acc.append(accuracy(y_hat, y.to(y_hat.device.index)))
-        loss = loss_fn(y_hat, y.to(y_hat.device.index))
+        loss = loss_fn(y_hat, y.to(y_hat.device.index)) # Supervised loss
         avg_loss.append(loss.item())
         model.zero_grad()
         loss.backward()
@@ -94,7 +94,7 @@ def train_epoch(train_loader, model, optimizer, loss_fn, scheduler):
         scheduler.step()
         
         if dict_learning == 'builtin' and (dict_loss == 'combo' or dict_loss == 'recon'): # Update LCA weights again based on LCA  ()
-            lca.update_weights(lca_acts, recon_errors) 
+            lca.update_weights(lca_acts, recon_errors) # Unsupervised loss
 
     lca_sparsity = (lca_acts != 0).float().mean().item()
     
@@ -307,7 +307,6 @@ class LCANet(nn.Module):
         self.pool.return_indices = True
     
     def forward(self, x):
-        #x = InputNorm()(x)
         inputs, lca_acts, recons, recon_errors, states  = self.lca(x)
 
         x = lca_acts # LCA layer
