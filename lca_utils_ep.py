@@ -146,7 +146,7 @@ class LCA_CNN(torch.nn.Module):
         
         size = size * size * channels[-1]      
           
-        fc_layers = [2048] + fc
+        fc_layers = [8192] + fc # CHANGE when running with different architectures
         #print('size: ', size)
 
         for idx in range(len(fc)):
@@ -181,10 +181,10 @@ class LCA_CNN(torch.nn.Module):
         
         for idx in range(len(self.channels)-1): 
             size = int( (size + 2*self.paddings[idx] - self.kernels[idx])/self.strides[idx] + 1 )   # size after conv
-            if self.pools[idx].__class__.__name__.find('Pool')!=-1: # does not 
+            if self.pools[idx].__class__.__name__.find('Pool')!=-1:
                 size = int( (size - self.pools[idx].kernel_size)/self.pools[idx].stride + 1 )  # size after Pool
             if idx == 0:
-                size = 16
+                size = 32 # size after lca, CHANGE according to architecture (hard coded)
             append(torch.zeros((mbs, self.channels[idx+1], size, size), requires_grad=True,  device=device))
         size = size * size * self.channels[-1]
         
@@ -256,7 +256,7 @@ class LCA_CNN(torch.nn.Module):
         device = x.device     
         self.poolsidx = self.init_poolidxs(mbs,x.device)
         #unpools = make_unpools('immm')
-        unpools = make_unpools('mmmm')
+        unpools = make_unpools('mmmmm')
         
         for idx in range(len(self.pools)):
             self.pools[idx].return_indices = True
@@ -294,7 +294,7 @@ class LCA_CNN(torch.nn.Module):
             # Update LCA layer with EP feedback term from CNN layer (layer 1) to LCA layer (layer 0)
             states = states + F.conv_transpose2d(unpools[0](layers[2], self.poolidxs[1]), self.synapses[1].weight, padding=self.paddings[1])
 
-        #print('states: ', states[0].mean())
+            #print('states: ', states[0].mean())
             #print('new_layers0: ', new_layers[0].mean())
             #print('layer1 conv transp:', F.conv_transpose2d(unpools[0](layers[2], self.poolidxs[1]), self.synapses[1].weight, padding=self.paddings[1]).mean())
             

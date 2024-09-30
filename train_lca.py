@@ -26,22 +26,23 @@ from lcapt.lca import LCAConv2D
 from lcapt.preproc import make_unit_var, make_zero_mean
 
 from data_utils import *
-from model_utils import make_pools
+from model_utils_fast import make_pools
 
 EPOCHS = 35
 mbs = 128
 data_aug = True
 
 lca_lambda = 0.25
-n_feats = 128
+n_feats = 64
 ksize = 5
 lca_iters = 600
 dict_learning = 'builtin'
+dict_loss = 'combo'
 
 pools = make_pools('immm')
 
 lca_load_dir = f'/storage/jr3548@drexel.edu/LCANet/pretrained/dictionary_learning/'
-lca_result_dir = f'/storage/jr3548@drexel.edu/LCANet/{dict_learning}/{lca_lambda}/'
+lca_result_dir = f'/storage/jr3548@drexel.edu/LCANet/{dict_learning}/{dict_loss}/{lca_lambda}/'
 
 def hard_sigmoid(x):
     return (1 + F.hardtanh(2 * x - 1)) * 0.5
@@ -81,7 +82,7 @@ def train_epoch(train_loader, model, optimizer, loss_fn, scheduler):
     model.train()
     
     for x, y in train_loader:
-        #x = make_unit_var(make_zero_mean(x))
+        x = make_unit_var(make_zero_mean(x))
         y_hat, lca_acts, recon_errors = model(x.to(device=1))
         
         avg_acc.append(accuracy(y_hat, y.to(y_hat.device.index)))
@@ -92,8 +93,8 @@ def train_epoch(train_loader, model, optimizer, loss_fn, scheduler):
         optimizer.step()
         scheduler.step()
         
-        if dict_learning == 'builtin':
-            lca.update_weights(lca_acts, recon_errors)
+        if dict_learning == 'builtin' and (dict_loss == 'combo' or dict_loss == 'recon'): # Update LCA weights again based on LCA  ()
+            lca.update_weights(lca_acts, recon_errors) 
 
     lca_sparsity = (lca_acts != 0).float().mean().item()
     
@@ -266,8 +267,9 @@ lca = LCAConv2D(
     100,
     5e-2,
     lca_iters,
-    pad = "valid",
-    return_vars=['acts', 'recon_errors'],
+    pad = "same",
+    return_vars=['inputs', 'acts', 'recons', 'recon_errors','states'],
+    req_grad=False if dict_loss == 'recon' else True,
     input_zero_mean=False,
     input_unit_var=False,
     nonneg=True
@@ -284,7 +286,6 @@ if dict_learning == 'train': # Only train dictionary, apart from CNN
         print(f'Epoch: {epoch}')
         if (epoch + 1) % (EPOCHS // 7) == 0:
             lca.module.lambda_ += 0.1
-
         for x, _ in train_loader:
             x = make_unit_var(make_zero_mean(x))
             acts, recon_errors = lca(x)
@@ -296,28 +297,29 @@ class LCANet(nn.Module):
         super(LCANet, self).__init__()
         
         self.lca = lca
-        self.bn = nn.BatchNorm2d(128)
-        self.conv2 = nn.Conv2d(128, 256, kernel_size=(3, 3), stride=1, padding=1)
-        self.conv3 = nn.Conv2d(256, 512, kernel_size=(3, 3), stride=1, padding=1)
-        self.conv4 = nn.Conv2d(512, 512, kernel_size=(3, 3), stride=1, padding=1)
-        self.fc = nn.Linear(512, 10)  # 512 channels, 3x3 spatial size, 10 output classes
+        self.conv1 = nn.Conv2d(64, 128, kernel_size=(3, 3), padding=1, bias=False)
+        self.conv2 = nn.Conv2d(128, 256, kernel_size=(3, 3), stride=1, padding=1, bias=False) # Originally true, maybe that helped me?
+        self.conv3 = nn.Conv2d(256, 512, kernel_size=(3, 3), stride=1, padding=1, bias=False)
+        self.conv4 = nn.Conv2d(512, 512, kernel_size=(3, 3), stride=1, padding=1, bias=False)
+        self.fc = nn.Linear(512, 10)  # 512 channels, 3x3 spatial size, 10 output classes... shouldnt it be 2048?
         
-        self.pools = make_pools('immm')
+        self.pool = nn.MaxPool2d(2, 2)
+        self.pool.return_indices = True
     
     def forward(self, x):
-        # Do we need to add something like in the foward function of EP
-        x = InputNorm()(x)
-        lca_acts, recon_error = self.lca(x)
+        #x = InputNorm()(x)
+        inputs, lca_acts, recons, recon_errors, states  = self.lca(x)
 
-        x = self.pools[0](lca_acts) # LCA layer
-        x = F.relu(self.bn(x))
-        x, _ = self.pools[1](F.relu(self.conv2(x)))
-        x, _ = self.pools[2](F.relu(self.conv3(x))) 
-        x, _ = self.pools[3](F.relu(self.conv4(x))) 
+        x = lca_acts # LCA layer
+        x = F.relu(self.pool(self.conv1(x))[0])
+        x = F.relu(self.pool(self.conv2(x))[0])
+        x = F.relu(self.pool(self.conv3(x))[0]) 
+        x = F.relu(self.pool(self.conv4(x))[0])
         x = x.view(x.size(0), -1)  # Flatten
         x = self.fc(x)
         
-        return x, lca_acts, recon_error
+        return x, lca_acts, recon_errors
+
 
 model = LCANet(lca)
 model.to(device=1)
@@ -337,6 +339,9 @@ scheduler = OneCycleLR(
 )
 
 model, df = train(model, train_loader, test_loader, optimizer, loss_fn, scheduler, EPOCHS)
+
+if not os.path.exists(lca_result_dir):
+    os.makedirs(lca_result_dir)
 
 df.to_csv(lca_result_dir + 'results.csv')
 
