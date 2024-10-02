@@ -130,10 +130,9 @@ class LCA_CNN(torch.nn.Module):
         
 
         # LCA is changing the size and number of channels before EP
-        size = int((size + 2 * paddings[0] - kernels[0]) / strides[0] + 1)  # size after lca layer
-        
-        if self.pools[0].__class__.__name__.find('Pool')!=-1:
-                size = int( (size - pools[0].kernel_size)/pools[0].stride + 1 )
+        size = int(size/self.synapses[0].stride)
+        #size = 32 # size after lca, CHANGE according to architecture (before we had hard coded)
+
                 
         for idx in range(1, len(channels)-1): 
             self.synapses.append(torch.nn.Conv2d(channels[idx], channels[idx+1], kernels[idx], 
@@ -146,9 +145,8 @@ class LCA_CNN(torch.nn.Module):
         
         size = size * size * channels[-1]      
           
-        fc_layers = [8192] + fc # CHANGE when running with different architectures
-        #print('size: ', size)
-
+        fc_layers = [size] + fc 
+        
         for idx in range(len(fc)):
             self.synapses.append(torch.nn.Linear(fc_layers[idx], fc_layers[idx+1], bias=True))
             
@@ -156,6 +154,9 @@ class LCA_CNN(torch.nn.Module):
         self.poolidxs = []
         append = self.poolidxs.append
         size = self.in_size
+        
+        size = int(size/self.synapses[0].stride)
+        append(torch.zeros((mbs, self.channels[1], size, size),  device=device)) 
         
         for idx in range(len(self.channels)-1): 
             size = int( (size + 2*self.paddings[idx] - self.kernels[idx])/self.strides[idx] + 1 )   # size after conv
@@ -178,13 +179,14 @@ class LCA_CNN(torch.nn.Module):
         neurons = []
         append = neurons.append
         size = self.in_size
-        
         for idx in range(len(self.channels)-1): 
-            size = int( (size + 2*self.paddings[idx] - self.kernels[idx])/self.strides[idx] + 1 )   # size after conv
+            if idx == 0:
+                size = int(size/self.synapses[idx].stride)
+                #size = 32 # size after lca, CHANGE according to architecture (hard coded)
+            if idx > 0:
+                size = int( (size + 2*self.paddings[idx] - self.kernels[idx])/self.strides[idx] + 1 )   # size after conv
             if self.pools[idx].__class__.__name__.find('Pool')!=-1:
                 size = int( (size - self.pools[idx].kernel_size)/self.pools[idx].stride + 1 )  # size after Pool
-            if idx == 0:
-                size = 32 # size after lca, CHANGE according to architecture (hard coded)
             append(torch.zeros((mbs, self.channels[idx+1], size, size), requires_grad=True,  device=device))
         size = size * size * self.channels[-1]
         
