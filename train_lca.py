@@ -44,6 +44,10 @@ pools = make_pools('immm')
 lca_load_dir = f'/storage/jr3548@drexel.edu/LCANet/pretrained/dictionary_learning/'
 lca_result_dir = f'/storage/jr3548@drexel.edu/LCANet/{dict_learning}/{dict_loss}/{lca_lambda}/'
 
+if not os.path.isdir(lca_result_dir):
+    print("Creating directory :", lca_result_dir)
+    os.makedirs(lca_result_dir)
+
 def hard_sigmoid(x):
     return (1 + F.hardtanh(2 * x - 1)) * 0.5
 
@@ -338,9 +342,6 @@ scheduler = OneCycleLR(
 )
 
 model, df = train(model, train_loader, test_loader, optimizer, loss_fn, scheduler, EPOCHS)
-
-if not os.path.exists(lca_result_dir):
-    os.makedirs(lca_result_dir)
 
 df.to_csv(lca_result_dir + 'results.csv')
 
