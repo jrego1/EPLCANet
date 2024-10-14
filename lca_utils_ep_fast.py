@@ -600,7 +600,7 @@ class LCA_CNN(torch.nn.Module):
         
         update = (update_2 / times_active_2 - update_3/ times_active_3) * self.lca.eta / (betas[1]-betas[0])
 
-        self.lca.update_weights_EP(update)
+        self.lca.update_weights_EP(update) # changed version to apply like lcapt package update_weights
 
         
 def train(model, optimizer, train_loader, test_loader, T1, T2, betas, device, epochs, criterion, alg='EP', 
