@@ -509,6 +509,7 @@ class LCA_CNN(torch.nn.Module):
                 new_layers[idx],self.poolidxs[idx] = self.pools[idx](self.synapses[idx](layers[idx])) 
             
             # Feedback EP from layer+1 to membrane potentials (hopfield-like model, converge to steady state)
+            # This is where the issue is... adding feedback from above layer blows up LCA
             states = frac*states + frac*F.conv_transpose2d(unpools[0](new_layers[0], self.poolidxs[0]),
                                                    self.synapses[0].weight,padding=1) #branch_point new_layers[0] or layers[1]
                                                     # synapses[0] between LCA-conv1 (new_layers[0])
