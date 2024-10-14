@@ -251,7 +251,7 @@ print(
     "\t",
     args.betas,
 )
-if args.model == "EPLCACNN":
+if args.model == "LCACNN":
     print("\n\tn_feats\tlca_lambda\ttau\teta\tlca_stride\tlca_ksize\tlca_iters")
     print(
         "\t",
