@@ -180,41 +180,36 @@ def plot_neural_activity(neurons, path):
         fig.add_subplot(2, N // 2 + 1, idx + 1)
         nrn = neurons[idx].cpu().detach().numpy().flatten()
         plt.hist(nrn, 50)
-        plt.title("neurons of layer " + str(idx + 1))
-    fig.savefig(path + "/neural_activity.png")
+        plt.title("Neurons, layer " + str(idx))
     plt.tight_layout()
+    fig.savefig(path + "/neural_activity.png")
     plt.close()
 
 
 def plot_synapses(model, path):
     # Plot the distribution of synapses in each layer of the given model.
-    if isinstance(model, nn.DataParallel):
-        N = len(model.module.synapses)
-    else:
-        N = len(model.synapses)
+    N = len(model.synapses)
     fig = plt.figure(figsize=(4 * N, 3))
     for idx in range(N):
         fig.add_subplot(1, N, idx + 1)
         nrn = model.synapses[idx].weight.cpu().detach().numpy().flatten()
         plt.hist(nrn, 50)
-        plt.title("synapses of layer " + str(idx + 1))
+        plt.title("Synapse layer " + str(idx) + ' weights')
+
     fig.savefig(path)
     plt.close()
 
-
 def plot_lca_weights(model, path=None):
     N = len(model.synapses)
-    for idx in range(N):
-        if isinstance(model.synapses[idx], LCAConv2D):
-            weights = make_feature_grid(model.synapses[idx].get_weights())
-            plt.imshow(weights.float().cpu().numpy())
-            plt.title("LCANet Dictionary")
-            plt.tick_params(
-                left=False, bottom=False, labelleft=False, labelbottom=False
-            )
-            plt.tight_layout()
-            if path is not None:
-                plt.savefig(path)
+    weights = make_feature_grid(model.lca.get_weights())
+    plt.imshow(weights.float().cpu().numpy())
+    plt.title("LCANet Dictionary")
+    plt.tick_params(
+        left=False, bottom=False, labelleft=False, labelbottom=False
+    )
+    plt.tight_layout()
+    if path is not None:
+        plt.savefig(path)
 
 
 def plot_lca_acts(acts, threshold=0.1):
@@ -371,6 +366,12 @@ def plot_metrics(train_metric, val_metric, metric_name, save_path):
     Returns:
     None
     """
+    
+    print(train_metric.shape)
+    
+    train_metric = np.array(train_metric)
+    val_metric = np.array(val_metric)
+    
     epochs = list(range(1, len(train_metric) + 1))
     
     plt.figure(figsize=(10, 6))
@@ -378,7 +379,6 @@ def plot_metrics(train_metric, val_metric, metric_name, save_path):
     plt.plot(epochs, train_metric, label=f'Train {metric_name}')
     plt.plot(epochs, val_metric, label=f'Val {metric_name}')
     
-    # Title and labels
     plt.title(f'LCANet {metric_name}')
     plt.xlabel('Epoch')
     plt.ylabel(metric_name)
@@ -386,3 +386,20 @@ def plot_metrics(train_metric, val_metric, metric_name, save_path):
     
     plt.savefig(save_path)
     plt.close() 
+    
+def plot_feedback(lca_array, feedback_array, array_name='', save_path='./results', phase_2=False):
+    x = np.arange(len(lca_array))
+    
+    plt.plot(x, lca_array, label='LCA states')
+    plt.plot(x, feedback_array, label='Feedback')
+
+    plt.legend(loc='best')
+    plt.ylabel(array_name)
+    if phase_2:
+        plt.title(f'LCA and Feedback {array_name} (Nudged Phase)')
+        plt.savefig(save_path)
+    else:
+        plt.title(f'LCA and Feedback {array_name} (Free Phase)')
+        plt.savefig(save_path)
+    
+    plt.close()

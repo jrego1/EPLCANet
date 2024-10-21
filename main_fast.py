@@ -18,10 +18,12 @@ import math
 import sys
 
 from data_utils import *
+from lca_utils_ep_fast import *
 
 from lcapt.analysis import make_feature_grid
 from lcapt.lca import LCAConv2D
 from lcapt.preproc import make_unit_var, make_zero_mean
+
 
 parser = argparse.ArgumentParser(description="Eqprop")
 parser.add_argument("--model", type=str, default="MLP", metavar="m", help="model")
@@ -229,6 +231,10 @@ parser.add_argument(
     help="Dictionary update loss.",
 )
 
+parser.add_argument(
+    "--scale_feedback", type=float, default=1.0, metavar="sf", help="Weight of convolutional feedback connections to LCA membrane potentials."
+)
+
 args = parser.parse_args()
 command_line = " ".join(sys.argv)
 
@@ -275,12 +281,6 @@ device = torch.device(
     "cuda:" + str(args.device) if torch.cuda.is_available() else "cpu"
 )
 
-if args.model == "LCACNN" or args.model == "CNN":
-    if args.alg == "EP":
-        from lca_utils_ep_fast import *
-    elif args.alg == "BPTT":
-        from lca_utils_bptt import *
-
 if args.save:
     date = datetime.now().strftime("%Y-%m-%d")
     time = datetime.now().strftime("%H-%M-%S")
@@ -291,8 +291,6 @@ if args.save:
             + args.task
             + "/"
             + args.alg
-            + "/"
-            + args.dict_loss
             + "/"
             + args.model
             + "/"
@@ -457,25 +455,7 @@ if args.load_path == "":
         pools = make_pools(args.pools)
         unpools = make_unpools(args.pools)
         channels = args.channels
-        lca = LCAConv2D(
-                args.channels[0],
-                1,
-                f"/storage/jr3548@drexel.edu/eplcanet/results/{args.task}/eplcanet",
-                args.kernels[0],
-                args.strides[0],
-                args.lca_lambda,
-                args.tau,
-                args.lrs[0],
-                args.lca_iters,
-                pad="valid",
-                return_vars=["acts", "recon_errors", "states"],
-                input_zero_mean=True,
-                input_unit_var=True,
-                nonneg=True,
-                req_grad=False if args.dict_loss=='recon' else True,
-                weight_init=(torch.nn.init.kaiming_uniform_, {}),
-            )
-        
+
         if args.model == "LCACNN":
             # Add LCA Layer in front of model
             model = LCA_CNN(
@@ -489,8 +469,7 @@ if args.load_path == "":
                 paddings=args.paddings,
                 activation=activation,
                 softmax=args.softmax,
-                lca=lca,
-                dict_loss=args.dict_loss
+                scale_feedback=args.scale_feedback
             )
             
         elif args.model == "CNN":
@@ -502,6 +481,7 @@ if args.load_path == "":
                 args.fc,
                 pools,
                 unpools,
+                device,
                 paddings=args.paddings,
                 activation=activation,
                 softmax=args.softmax,
@@ -523,13 +503,14 @@ if args.load_path == "":
                 paddings=args.paddings,
                 activation=activation,
                 softmax=args.softmax,
-            )
+            ).to(device)
 
-        elif args.model == "LCACNN": # EP and BPTT
-            # Add LCA Layer in front of model
-            channels = [3] + args.channels
+        elif args.model == "LCACNN":
+            #channels = [3]+args.channels
+            channels = args.channels
 
-            model = LCA_CNN(
+            # TODO: get LCA parameters in lca_utils_ep_fast.py
+            model = LCA_CNN(args.device,
                 32,
                 channels,
                 args.kernels,
@@ -539,10 +520,8 @@ if args.load_path == "":
                 unpools,
                 paddings=args.paddings,
                 activation=activation,
-                softmax=args.softmax)
-                #lca=lca,
-                #dict_loss=args.dict_loss
-            #)
+                softmax=args.softmax,
+                scale_feedback=args.scale_feedback).to(device)
 
     elif args.task == "imagenet":  # only for gducheck
         pools = make_pools(args.pools)
@@ -566,25 +545,6 @@ if args.load_path == "":
             channels = [3] + args.channels
 
             # Add LCA Layer in front of model
-            lca = LCAConv2D(
-                args.channels[0],
-                3,
-                f"/storage/jr3548@drexel.edu/eplcanet/results/{args.task}/eplcanet",
-                args.kernels[0],
-                args.strides[0],
-                args.lca_lambda,
-                args.tau,
-                args.eta,
-                args.lca_iters,
-                pad="valid",
-                return_vars=["acts", "recon_errors", "states"],
-                input_zero_mean=True,
-                input_unit_var=True,
-                nonneg=True,
-                req_grad=False if args.dict_loss=='recon' else True,
-                #weight_init=(torch.nn.init.kaiming_uniform_, {}),
-            )
-
             model = LCA_CNN(
                 224,
                 channels,
@@ -593,23 +553,19 @@ if args.load_path == "":
                 args.fc,
                 pools,
                 unpools,
+                device,
                 paddings=args.paddings,
                 activation=activation,
                 softmax=args.softmax,
-                lca=lca,
+                scale_feedback=args.scale_feedback
             ) 
         print("\n")
-        # print('Poolings =', model.pools)
 
     #if args.scale is not None:
         #model.apply(my_init(args.scale))
 else:
     model = torch.load(args.load_path + "/model.pt", map_location=device)
 
-model.to(device=device)
-
-print(model)
-print("\n")
 for name, param in model.named_parameters():
     print(f"Layer {name} requires_grad: {param.requires_grad}")
 
@@ -684,6 +640,7 @@ if args.todo == "train":
             args.T1,
             args.T2,
             betas,
+            args.scale_feedback,
             device,
             args.epochs,
             criterion,
@@ -725,40 +682,6 @@ elif args.todo == "gducheck":
         images, labels = images.to(device), labels.to(device)
         print(images.shape)
 
-    BPTT, EP = check_gdu(
-        model, images, labels, args.T1, args.T2, betas, criterion, alg=args.alg
-    )
-    if args.thirdphase:
-        beta_1, beta_2 = args.betas
-        _, EP_2 = check_gdu(
-            model,
-            images,
-            labels,
-            args.T1,
-            args.T2,
-            (beta_1, -beta_2),
-            criterion,
-            alg=args.alg,
-        )
-
-    RMSE(BPTT, EP)
-    if args.save:
-        bptt_est = get_estimate(BPTT)
-        ep_est = get_estimate(EP)
-        torch.save(bptt_est, path + "/bptt.tar")
-        torch.save(BPTT, path + "/BPTT.tar")
-        torch.save(ep_est, path + "/ep.tar")
-        torch.save(EP, path + "/EP.tar")
-        if args.thirdphase:
-            ep_2_est = get_estimate(EP_2)
-            torch.save(ep_2_est, path + "/ep_2.tar")
-            torch.save(EP_2, path + "/EP_2.tar")
-            compare_estimate(bptt_est, ep_est, ep_2_est, path)
-            plot_gdu(BPTT, EP, path, EP_2=EP_2, alg=args.alg)
-        else:
-            plot_gdu(BPTT, EP, path, alg=args.alg)
-
-
 elif args.todo == "evaluate":
 
     training_acc = evaluate(model, train_loader, args.T1, device)
@@ -774,224 +697,4 @@ elif args.todo == "evaluate":
         "\nTest accuracy :",
         round(test_acc, 2),
         file=open(path + "hyperparameters.txt", "a"),
-    )
-
-elif args.todo == "attack":
-    print("Attacking")
-    # training_acc = evaluate(model, train_loader, args.T1, device)
-    # training_acc /= len(train_loader.dataset)
-    # print('\nTrain accuracy :', round(training_acc,2), file=open(path+'/hyperparameters.txt', 'a'))
-    test_acc = attack(
-        model,
-        test_loader,
-        args.T1,
-        criterion,
-        device,
-        args.load_path,
-        args.softmax,
-        args.image_print,
-        args.attack_step,
-        args.predict_step,
-        args.attack_norm,
-    )
-    test_acc /= len(test_loader.dataset)
-    print(path, 1)
-    # print('\nTest accuracy :', round(test_acc, 2), file=open(args.load_path+'/hyperparametersA.txt', 'a'))
-
-elif args.todo == "image-print":
-    print("Attacking")
-    # training_acc = evaluate(model, train_loader, args.T1, device)
-    # training_acc /= len(train_loader.dataset)
-    # print('\nTrain accuracy :', round(training_acc,2), file=open(path+'/hyperparameters.txt', 'a'))
-    test_acc = img_print(
-        model,
-        test_loader,
-        args.T1,
-        criterion,
-        device,
-        args.load_path,
-        args.softmax,
-        args.image_print,
-        args.attack_step,
-        args.predict_step,
-        args.attack_norm,
-    )
-    test_acc /= len(test_loader.dataset)
-    print(path, 1)
-    # print('\nTest accuracy :', round(test_acc, 2), file=open(args.load_path+'/hyperparametersA.txt', 'a'))
-
-elif args.todo == "attack-resume":
-    print("Attacking")
-    # training_acc = evaluate(model, train_loader, args.T1, device)
-    # training_acc /= len(train_loader.dataset)
-    # print('\nTrain accuracy :', round(training_acc,2), file=open(path+'/hyperparameters.txt', 'a'))
-    test_acc = attack_resume(
-        model,
-        test_loader,
-        args.T1,
-        criterion,
-        device,
-        args.load_path,
-        args.softmax,
-        args.image_print,
-        args.attack_step,
-        args.predict_step,
-        args.attack_norm,
-    )
-    test_acc /= len(test_loader.dataset)
-    print(path, 1)
-    # print('\nTest accuracy :', round(test_acc, 2), file=open(args.load_path+'/hyperparametersA.txt', 'a'))
-elif args.todo == "hsj-attack":
-    print("HSJ Attacking")
-    test_acc = hsj_attack(
-        model,
-        test_loader,
-        args.T1,
-        criterion,
-        device,
-        args.load_path,
-        args.softmax,
-        args.image_print,
-        args.attack_step,
-        args.predict_step,
-        args.attack_norm,
-    )
-    test_acc /= len(test_loader.dataset)
-    print(path, 1)
-elif args.todo == "auto-attack":
-    print("Auto Attacking")
-    test_acc = auto_attack(
-        model,
-        test_loader,
-        args.T1,
-        criterion,
-        device,
-        args.load_path,
-        args.softmax,
-        args.image_print,
-        args.attack_step,
-        args.predict_step,
-        args.attack_norm,
-    )
-    test_acc /= len(test_loader.dataset)
-    print(path, 1)
-
-elif args.todo == "baseline":
-    print("Attacking")
-    # training_acc = evaluate(model, train_loader, args.T1, device)
-    # training_acc /= len(train_loader.dataset)
-    # print('\nTrain accuracy :', round(training_acc,2), file=open(path+'/hyperparameters.txt', 'a'))
-    baseline_print(
-        model, test_loader, args.T1, criterion, device, args.load_path, args.softmax
-    )
-    # print('\nTest accuracy :', round(test_acc, 2), file=open(args.load_path+'/hyperparametersA.txt', 'a'))
-elif args.todo == "generate":
-    print("Generating Adversarial Images")
-    images = generate(
-        model, test_loader, args.T1, criterion, device, args.load_path, args.softmax
-    )
-
-elif args.todo == "characteristic":
-    print("Characteristics")
-    test_acc = characteristics(model, test_loader, args.T1, device, args.load_path)
-    test_acc /= len(test_loader.dataset)
-
-if args.todo == "corruptions":
-    print("Testing on Corruptions")
-    test_acc = corruptions(
-        model, test_loader, args.T1, device, args.load_path, args.softmax
-    )
-
-if args.todo == "advtrain":
-    assert len(args.lrs) == len(model.synapses)
-
-    # Constructing the optimizer
-    optim_params = []
-    if (args.alg == "CEP" and args.wds) and not (args.cep_debug):
-        for idx in range(len(model.synapses)):
-            args.wds[idx] = (1 - (1 - args.wds[idx] * 0.1) ** (1 / args.T2)) / args.lrs[
-                idx
-            ]
-
-    for idx in range(len(model.synapses)):
-        if args.wds is None:
-            optim_params.append(
-                {"params": model.synapses[idx].parameters(), "lr": args.lrs[idx]}
-            )
-        else:
-            optim_params.append(
-                {
-                    "params": model.synapses[idx].parameters(),
-                    "lr": args.lrs[idx],
-                    "weight_decay": args.wds[idx],
-                }
-            )
-    if hasattr(model, "B_syn"):
-        for idx in range(len(model.B_syn)):
-            if args.wds is None:
-                optim_params.append(
-                    {"params": model.B_syn[idx].parameters(), "lr": args.lrs[idx + 1]}
-                )
-            else:
-                optim_params.append(
-                    {
-                        "params": model.B_syn[idx].parameters(),
-                        "lr": args.lrs[idx + 1],
-                        "weight_decay": args.wds[idx + 1],
-                    }
-                )
-
-    if args.optim == "sgd":
-        optimizer = torch.optim.SGD(optim_params, momentum=args.mmt)
-    elif args.optim == "adam":
-        optimizer = torch.optim.Adam(optim_params)
-
-    # Constructing the scheduler
-    if args.lr_decay:
-        # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[40,80,120], gamma=0.1)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, 100, eta_min=1e-5
-        )
-    else:
-        scheduler = None
-
-    # Loading the state when resuming a run
-    if args.load_path != "":
-        checkpoint = torch.load(
-            args.load_path + "/checkpoint_Train_Eps_%d.tar" % (int(args.eps * 1000))
-        )
-        optimizer.load_state_dict(checkpoint["opt"])
-        if checkpoint["scheduler"] is not None and args.lr_decay:
-            scheduler.load_state_dict(checkpoint["scheduler"])
-    else:
-        checkpoint = None
-
-    print(optimizer)
-    print("\ntraining algorithm : ", args.alg, "\n")
-    if args.save and args.load_path == "":
-        createHyperparametersFile(path, args, model, command_line)
-
-    print("Success")
-    adv_train(
-        model,
-        optimizer,
-        train_loader,
-        test_loader,
-        args.T1,
-        args.T2,
-        betas,
-        device,
-        args.epochs,
-        criterion,
-        epsilon=args.eps,
-        train_attack_step=args.train_attack_step,
-        alg=args.alg,
-        random_sign=args.random_sign,
-        check_thm=args.check_thm,
-        save=args.save,
-        path=path,
-        checkpoint=checkpoint,
-        thirdphase=args.thirdphase,
-        scheduler=scheduler,
-        cep_debug=args.cep_debug,
     )
