@@ -18,7 +18,7 @@ import math
 import sys
 
 from data_utils import *
-from lca_utils_ep_fast import *
+
 
 from lcapt.analysis import make_feature_grid
 from lcapt.lca import LCAConv2D
@@ -28,8 +28,9 @@ from lcapt.preproc import make_unit_var, make_zero_mean
 parser = argparse.ArgumentParser(description="Eqprop")
 parser.add_argument("--model", type=str, default="MLP", metavar="m", help="model")
 parser.add_argument("--task", type=str, default="MNIST", metavar="t", help="task")
-
+parser.add_argument("--dict_training", type=str, default='no_lca', metavar="pd", help="Learn, pretrain, or fine tune LCA dictionary")
 parser.add_argument("--pools", type=str, default="mm", metavar="p", help="pooling")
+
 parser.add_argument(
     "--archi",
     nargs="+",
@@ -203,7 +204,7 @@ parser.add_argument(
 parser.add_argument("--attack-norm", type=int, default=2, help="Attack Norm")
 
 parser.add_argument(
-    "--n_feats",
+    "--lca_feats",
     type=int,
     default=784,
     metavar="df",
@@ -212,17 +213,18 @@ parser.add_argument(
 parser.add_argument(
     "--lca_lambda", type=float, default=0.25, metavar="ll", help="LCA lambda."
 )
-parser.add_argument("--tau", type=int, default=100, metavar="tau", help="LCA tau.")
-parser.add_argument("--eta", type=float, default=0.001, metavar="eta", help="LCA eta.")
+parser.add_argument("--lca_tau", type=int, default=100, metavar="tau", help="LCA tau.")
+parser.add_argument("--lca_eta", type=float, default=0.001, metavar="eta", help="LCA eta.")
 parser.add_argument(
     "--lca_stride", type=int, default=1, metavar="ds", help="LCA stride."
 )
 parser.add_argument(
     "--lca_ksize", type=int, default=7, metavar="dk", help="LCA kernel size."
-)  # Does this need to be the same as kernels in CNN?
+)  
 parser.add_argument(
     "--lca_iters", type=int, default=600, metavar="di", help="LCA iterations."
 )
+
 parser.add_argument(
     "--dict_loss",
     type=str,
@@ -237,6 +239,27 @@ parser.add_argument(
 
 args = parser.parse_args()
 command_line = " ".join(sys.argv)
+
+print('Dictionary training: ', args.dict_training)
+
+if args.dict_training == 'pretrained':
+    from pretrainedlca_utils_ep_fast import *
+    pretrained=True
+    print('pretrained utils')
+
+# if args.dict_training == 'pretrained_ep':
+#     from e1025_pretrainedlca_utils_ep_fast import *
+#     pretrained=True
+# elif args.dict_training == 'finetune':
+#     from finetunedlca_utils_ep_fast import *
+#     pretrained=True
+# elif args.dict_training == 'learn':
+#     from dictlearninglca_utils_ep_fast import *
+#     pretrained=False
+elif args.dict_training == '':
+    from lca_utils_ep_fast import *
+    pretrained=True
+    
 
 print("\n")
 print(command_line)
@@ -258,16 +281,16 @@ print(
     args.betas,
 )
 if args.model == "LCACNN":
-    print("\n\tn_feats\tlca_lambda\ttau\teta\tlca_stride\tlca_ksize\tlca_iters")
+    print("\ndict elements\tlca_lambda\ttau\teta\tlca_stride\tlca_ksize\tlca_iters")
     print(
         "\t",
-        args.n_feats,
+        args.lca_feats,
         "\t",
         args.lca_lambda,
         "\t",
-        args.tau,
+        args.lca_tau,
         "\t",
-        args.eta,
+        args.lca_eta,
         "\t",
         args.lca_stride,
         "\t",
@@ -275,7 +298,15 @@ if args.model == "LCACNN":
         "\t",
         args.lca_iters,
     )
-    print("\tdict_loss:", args.dict_loss)
+
+lca_params={
+    'lca_feats': args.lca_feats,
+    'lca_lambda': args.lca_lambda,
+    'lca_tau': args.lca_tau,
+    'lca_eta': args.lca_eta,
+    'lca_stride': args.lca_stride,
+    'lca_ksize': args.lca_ksize,
+    'lca_iters': args.lca_iters}
 
 device = torch.device(
     "cuda:" + str(args.device) if torch.cuda.is_available() else "cpu"
@@ -294,27 +325,22 @@ if args.save:
             + "/"
             + args.model
             + "/"
+            + args.dict_training
+            + "/"
             + date
             + "/"
         )
     else:
         path = args.load_path
+        
     if not (os.path.exists(path)):
         print("Creating directory :", path)
         os.makedirs(path)
-    else:
-        print("Directory already exists :", path)
-        path = path + 'run_' + str(len(os.listdir(path))) + '/'
-        os.makedirs(path)
-else:
-    path = ""
+    
+    os.makedirs(path + f'run_{len(os.listdir(path))}/')
+    path = path + f'run_{len(os.listdir(path))}/'
 
-
-# if args.alg=='CEP' and args.cep_debug:
-#    torch.set_default_dtype(torch.float64)
-
-print("Default dtype :\t", torch.get_default_dtype(), "\n")
-
+    print("---------- saving at {} --------------".format(path))
 
 mbs = args.mbs
 if args.seed is not None:
@@ -344,9 +370,10 @@ if args.task == "MNIST":
         download=True,
     )
 
-    # Get subset of data for faster development
+    # Get subset of data for faster development 
     num_train_samples = len(mnist_dset_train)  # Adjust the number of training samples
     num_test_samples = len(mnist_dset_test)  # Adjust the number of test samples
+    
     train_indices = torch.randperm(len(mnist_dset_train)).tolist()[:num_train_samples]
     test_indices = torch.randperm(len(mnist_dset_test)).tolist()[:num_test_samples]
     mnist_dset_train = torch.utils.data.Subset(mnist_dset_train, train_indices)
@@ -395,7 +422,6 @@ elif args.task == "CIFAR10":
             [torchvision.transforms.ToTensor()]
         )
     else:
-        # As SM what these values are? What would be appropriate for MNIST?
         transform_test = torchvision.transforms.Compose(
             [
                 torchvision.transforms.ToTensor(),
@@ -419,11 +445,9 @@ elif args.task == "CIFAR10":
         download=True,
     )
 
-    # For Validation set
     val_index = np.random.randint(10)
     val_samples = list(range(5000 * val_index, 5000 * (val_index + 1)))
 
-    # train_loader = torch.utils.data.DataLoader(cifar10_train_dset, batch_size=mbs, sampler = torch.utils.data.SubsetRandomSampler(val_samples), shuffle=False, num_workers=1)
     train_loader = torch.utils.data.DataLoader(
         cifar10_train_dset, batch_size=mbs, shuffle=True, num_workers=1
     )
@@ -454,7 +478,7 @@ if args.load_path == "":
     if args.task == "MNIST":
         pools = make_pools(args.pools)
         unpools = make_unpools(args.pools)
-        channels = args.channels
+        channels =  [3] + args.channels
 
         if args.model == "LCACNN":
             # Add LCA Layer in front of model
@@ -469,7 +493,9 @@ if args.load_path == "":
                 paddings=args.paddings,
                 activation=activation,
                 softmax=args.softmax,
-                scale_feedback=args.scale_feedback
+                scale_feedback=args.scale_feedback,
+                pretrain_dict=pretrained,
+                lca_params = lca_params
             )
             
         elif args.model == "CNN":
@@ -507,9 +533,10 @@ if args.load_path == "":
 
         elif args.model == "LCACNN":
             #channels = [3]+args.channels
+            #channels = [lca_params['lca_feats']] + args.channels
+            
             channels = args.channels
 
-            # TODO: get LCA parameters in lca_utils_ep_fast.py
             model = LCA_CNN(args.device,
                 32,
                 channels,
@@ -521,9 +548,12 @@ if args.load_path == "":
                 paddings=args.paddings,
                 activation=activation,
                 softmax=args.softmax,
-                scale_feedback=args.scale_feedback).to(device)
+                scale_feedback=args.scale_feedback,
+                pretrain_dict=pretrained,
+                lca_params = lca_params
+                ).to(device)
 
-    elif args.task == "imagenet":  # only for gducheck
+    elif args.task == "imagenet": 
         pools = make_pools(args.pools)
         unpools = make_unpools(args.pools)
         channels = [3] + args.channels
@@ -542,7 +572,7 @@ if args.load_path == "":
             )
             
         elif args.model == "LCACNN":
-            channels = [3] + args.channels
+            channels = args.channels
 
             # Add LCA Layer in front of model
             model = LCA_CNN(
@@ -566,8 +596,8 @@ if args.load_path == "":
 else:
     model = torch.load(args.load_path + "/model.pt", map_location=device)
 
-for name, param in model.named_parameters():
-    print(f"Layer {name} requires_grad: {param.requires_grad}")
+#for name, param in model.named_parameters():
+#    print(f"Layer {name} requires_grad: {param.requires_grad}")
 
 betas = args.betas[0], args.betas[1]
 

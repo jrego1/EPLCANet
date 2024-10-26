@@ -239,9 +239,9 @@ class P_CNN(torch.nn.Module):
         for idx in range(len(self.pools)):
             self.pools[idx].return_indices = True
         
-        #poolidxs = [[] for i in range(len(self.pools))]
         layers = [x] + neurons
-        new_layers = [] # tendency of neurons
+        new_layers = [] # state of neurons
+        
         for neuron in neurons: # exclude input layer
             new_layers.append(torch.zeros_like(neuron, device=x.device))
         for t in range(T):

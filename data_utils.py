@@ -176,9 +176,12 @@ def plot_neural_activity(neurons, path):
     # Plot histogram of the activity of each neuron in each layer.
     N = len(neurons)
     fig = plt.figure(figsize=(3 * N, 6))
+    #print(N)
     for idx in range(N):
         fig.add_subplot(2, N // 2 + 1, idx + 1)
         nrn = neurons[idx].cpu().detach().numpy().flatten()
+        #print('neurons max:', nrn.max())
+        #print('neuron min: ', nrn.min())
         plt.hist(nrn, 50)
         plt.title("Neurons, layer " + str(idx))
     plt.tight_layout()
@@ -200,8 +203,11 @@ def plot_synapses(model, path):
     plt.close()
 
 def plot_lca_weights(model, path=None):
-    N = len(model.synapses)
-    weights = make_feature_grid(model.lca.get_weights())
+    
+    if not isinstance(model, LCAConv2D):
+        lca = model.lca
+
+    weights = make_feature_grid(lca.get_weights())
     plt.imshow(weights.float().cpu().numpy())
     plt.title("LCANet Dictionary")
     plt.tick_params(
@@ -366,8 +372,6 @@ def plot_metrics(train_metric, val_metric, metric_name, save_path):
     Returns:
     None
     """
-    
-    print(train_metric.shape)
     
     train_metric = np.array(train_metric)
     val_metric = np.array(val_metric)
