@@ -280,6 +280,7 @@ print(
     "\t",
     args.betas,
 )
+
 if args.model == "LCACNN":
     print("\ndict elements\tlca_lambda\ttau\teta\tlca_stride\tlca_ksize\tlca_iters")
     print(
@@ -341,6 +342,7 @@ if args.save:
     path = path + f'run_{len(os.listdir(path))}/'
 
     print("---------- saving at {} --------------".format(path))
+    print("running GPU", args.device)
 
 mbs = args.mbs
 if args.seed is not None:
@@ -591,20 +593,16 @@ if args.load_path == "":
             ) 
         print("\n")
 
-    #if args.scale is not None:
-        #model.apply(my_init(args.scale))
+    if args.scale is not None:
+        model.apply(my_init(args.scale))
 else:
     model = torch.load(args.load_path + "/model.pt", map_location=device)
-
-#for name, param in model.named_parameters():
-#    print(f"Layer {name} requires_grad: {param.requires_grad}")
 
 betas = args.betas[0], args.betas[1]
 
 if args.todo == "train":
     assert len(args.lrs) == len(model.synapses)
 
-    # Constructing the optimizer
     optim_params = []
 
     for idx in range(len(model.synapses)):
@@ -638,7 +636,7 @@ if args.todo == "train":
     elif args.optim == "adam":
         optimizer = torch.optim.Adam(optim_params)
 
-    # Constructing the scheduler
+
     if args.lr_decay:
         # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[40,80,120], gamma=0.1)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -647,7 +645,6 @@ if args.todo == "train":
     else:
         scheduler = None
 
-    # Loading the state when resuming a run
     if args.load_path != "":
         checkpoint = torch.load(args.load_path + "/checkpoint.tar")
         optimizer.load_state_dict(checkpoint["opt"])
@@ -658,6 +655,7 @@ if args.todo == "train":
 
     print("\nTraining algorithm : ", args.alg)
     print("\nModel type : ", args.model, "\n")
+    print("\nDictionary training: ", args.dict_training)
     if args.save and args.load_path == "":
         createHyperparametersFile(path, args, model, command_line)
 
