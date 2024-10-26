@@ -243,21 +243,21 @@ command_line = " ".join(sys.argv)
 print('Dictionary training: ', args.dict_training)
 
 if args.dict_training == 'pretrained':
+    # LCA preprocessing > energy-based RCNN training with EqProp
     from pretrainedlca_utils_ep_fast import *
     pretrained=True
-    print('pretrained utils')
 
-# if args.dict_training == 'pretrained_ep':
-#     from e1025_pretrainedlca_utils_ep_fast import *
-#     pretrained=True
 # elif args.dict_training == 'finetune':
+    # LCA preprocessing > energy-based RCNN training with EqProp > dictionary finetuning with feedback
 #     from finetunedlca_utils_ep_fast import *
 #     pretrained=True
 # elif args.dict_training == 'learn':
 #     from dictlearninglca_utils_ep_fast import *
 #     pretrained=False
+
 elif args.dict_training == '':
-    from lca_utils_ep_fast import *
+    # Energy-based RCNN training with EqProp
+    from utils_ep_fast import *
     pretrained=True
     
 
