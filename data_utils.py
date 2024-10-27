@@ -263,7 +263,8 @@ def plot_lines(line_1, line_2, title, label_1, label_2, x_label, y_label, path):
 
 
 def createHyperparametersFile(path, args, model, command_line):
-    
+    open(path + 'hyperparameters.txt', 'a').close()
+
     hyperparameters = open(path + "hyperparameters.txt", "w")
     L = [
         "- task: {}".format(args.task) + "\n",

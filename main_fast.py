@@ -244,13 +244,14 @@ print('Dictionary training: ', args.dict_training)
 
 if args.dict_training == 'pretrained':
     # LCA preprocessing > energy-based RCNN training with EqProp
-    from pretrainedlca_utils_ep_fast import *
+    #from pretrainedlca_utils_ep_fast import *
+    from lca_utils_ep_fast import *
     pretrained=True
 
-# elif args.dict_training == 'finetune':
+elif args.dict_training == 'finetune':
     # LCA preprocessing > energy-based RCNN training with EqProp > dictionary finetuning with feedback
-#     from finetunedlca_utils_ep_fast import *
-#     pretrained=True
+     from tuning_lca_utils_ep_fast import *
+     pretrained=True
 # elif args.dict_training == 'learn':
 #     from dictlearninglca_utils_ep_fast import *
 #     pretrained=False
@@ -336,9 +337,10 @@ if args.save:
     if not (os.path.exists(path)):
         print("Creating directory :", path)
         os.makedirs(path)
-    
-    os.makedirs(path + f'run_{len(os.listdir(path))}/')
-    path = path + f'run_{len(os.listdir(path))}/'
+    run_num = len(os.listdir(path))
+    path = path + f'run_{run_num}/'
+    os.makedirs(path + f'run_{run_num}/')
+
 
     print("---------- saving at {} --------------".format(path))
 
@@ -387,7 +389,7 @@ if args.task == "MNIST":
     )
 
     test_loader = torch.utils.data.DataLoader(
-        mnist_dset_test, batch_size=200, shuffle=False, num_workers=0
+        mnist_dset_test, batch_size=mbs, shuffle=False, num_workers=0
     )
 
 elif args.task == "CIFAR10":
@@ -533,9 +535,9 @@ if args.load_path == "":
 
         elif args.model == "LCACNN":
             #channels = [3]+args.channels
-            #channels = [lca_params['lca_feats']] + args.channels
+            channels = [lca_params['lca_feats']] + args.channels
             
-            channels = args.channels
+            #channels = args.channels
 
             model = LCA_CNN(args.device,
                 32,
@@ -658,8 +660,8 @@ if args.todo == "train":
 
     print("\nTraining algorithm : ", args.alg)
     print("\nModel type : ", args.model, "\n")
-    if args.save and args.load_path == "":
-        createHyperparametersFile(path, args, model, command_line)
+        
+    createHyperparametersFile(path, args, model, command_line)
 
     if args.todo == "train":
         train(
@@ -684,33 +686,6 @@ if args.todo == "train":
             scheduler=scheduler,
             cep_debug=args.cep_debug
         )
-
-elif args.todo == "gducheck":
-    print("\ntraining algorithm : ", args.alg, "\n")
-    if args.save and args.load_path == "":
-        createHyperparametersFile(path, args, model, command_line)
-
-    if args.task != "imagenet":
-        dataiter = iter(train_loader)
-        images, labels = dataiter.next()
-        images, labels = images[0:20, :], labels[0:20]
-        images, labels = images.to(device), labels.to(device)
-    else:
-        images = []
-        all_files = glob.glob("imagenet_samples/*.JPEG")
-        for idx, filename in enumerate(all_files):
-            if idx > 2:
-                break
-            image = Image.open(filename)
-            image = torchvision.transforms.functional.center_crop(image, 224)
-            image = torchvision.transforms.functional.to_tensor(image)
-            image.unsqueeze_(0)
-            image = image.add_(-image.mean()).div_(image.std())
-            images.append(image)
-        labels = torch.randint(1000, (len(images),))
-        images = torch.cat(images, dim=0)
-        images, labels = images.to(device), labels.to(device)
-        print(images.shape)
 
 elif args.todo == "evaluate":
 

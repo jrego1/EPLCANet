@@ -420,7 +420,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
             if epoch < scheduler.T_max:
                 scheduler.step()
 
-        test_correct, test_acts, test_inputs = evaluate(model, test_loader, T1, device,mean=mean,std=std)
+        test_correct = evaluate(model, test_loader, T1, device,mean=mean,std=std)
         test_acc = test_correct/(len(test_loader.dataset)) * 100
         
         train_acc = run_correct/run_total * 100

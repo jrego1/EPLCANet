@@ -1,20 +1,17 @@
 
-This repository contains code to train an energy-based model (EBM) with a sparse coding frontend with equilibrium propagation and fine tune the sparse layer's dictionary for classification.
+This repository contains code to train an energy-based model with a sparse coding frontend with equilibrium propagation and fine tune the sparse layer's dictionary for classification.
 
 - main_fast.py: parses shell scripts, constructs model, optimizers, runs model from appropriate utils.py
-- 
-- pretrainedlca_utils_ep_fast.py: functions to build and train an energy-based recurrent convolutional neural network (RCNN) with a front sparse coding layer. The *pretrained* sparse dictionary is held fixed during EBM training with equilibrium propagation and preprocesses inputs with LCA dynamics.
+- cifar_dictlearning.py: script to train a sparse coding dictionary with the Locally Competitive Algorithm 
+- utils_ep_fast.py: functions to build and train an energy-based recurrent convolutional neural network (RCNN) with image input
+- pretrainedlca_utils_ep_fast.py: functions to build and train an energy-based RCNN with a front sparse coding layer. The *pretrained* sparse dictionary is held fixed during EBM training with equilibrium propagation and preprocesses inputs with LCA dynamics.
+- data_utils.py: plotting and logging functions
 - run/: shell scripts for running models and experiments
-\\
-\\
-\\
 
 
-*** *work in progress* ***
+*** *work in progress* *** *(TODO: Build and train an energy-based recurrent convolutional neural network (RCNN) with a front sparse coding layer using equilibrium propagation. *Tune* the sparse dictionary for classification by introducing feedback to activations during EBM training with equilibrium propagation.)* *** *work in progress* *** 
 
-(TODO: Build and train an energy-based recurrent convolutional neural network (RCNN) with a front sparse coding layer using equilibrium propagation. *Tune* the sparse dictionary for classification by introducing feedback to activations during EBM training with equilibrium propagation.)
-
-### LCA Sparse Coding PyTorch Implementation of the
+### LCA Sparse Coding PyTorch Implementation
 This repository leverages functions from lca-pytorch.
 
 https://github.com/lanl/lca-pytorch
@@ -25,11 +22,10 @@ This repository contains some code reworked from https://github.com/Laborieux-Ax
 
 ## Training
 
-When setting the flags `--todo 'train' --save`, a results folder will be created at results/(EP or BPTT)/loss/yyyy-mm-dd/ with a plot of the train/test accuracy, reconstruction error, and dictionary sparsity updated at each epoch, a histogram of neural activations at each layer, and dictionary. The best performing model is saved at model.pt and the checkpoint for resuming training at checkpoint.tar. To resume training, simply rerun the same command line with the flag `--load-path 'results/.../hh-mm-ss'` and set the epoch argument to the remaining number of epochs. When the training is over, the final model and checkpoint are saved at final_model.pt and final_checkpoint.tar (they usually differ from the best model).
+### Training RCNN using EqProp with symmetric connections
+    python main_fast.py --model 'CNN' --task 'CIFAR10' --data-aug --channels 64 128 256 512 --kernels 3 3 3 3 --pools 'mmmm' --strides 1 1 1 1 --paddings 1 1 1 1 --fc 10 --optim 'sgd' --lrs 0.25 0.15 0.1 0.08 0.05 --wds 3e-4 3e-4 3e-4 3e-4 3e-4  --mmt 0.9 --lr-decay --epochs 35 --act 'my_hard_sig' --todo 'train' --T1 250 --T2 50 --mbs 128 --alg 'EP' --betas 0.0 1.0 --thirdphase --loss 'cel' --softmax --save
 
-### Training an RCNN on CIFAR using equilibrium propagation with symmetric connections
-. run/
-
+### Training RCNN with a (pretrained) LCA preprocessing layer using EqProp with symmetric connections
 
 
 
