@@ -392,7 +392,7 @@ def plot_metrics(train_metric, val_metric, metric_name, save_path):
     plt.savefig(save_path)
     plt.close() 
     
-def plot_feedback(lca_array, feedback_array, array_name='', save_path='./results', phase_2=False):
+def plot_feedback(lca_array, feedback_array, array_name='', save_path='./', phase_2=False):
     x = np.arange(len(lca_array))
     
     plt.plot(x, lca_array, label='LCA states')
@@ -402,9 +402,9 @@ def plot_feedback(lca_array, feedback_array, array_name='', save_path='./results
     plt.ylabel(array_name)
     if phase_2:
         plt.title(f'LCA and Feedback {array_name} (Nudged Phase)')
-        plt.savefig(save_path)
+        plt.savefig(save_path + '_nudged.png')
     else:
         plt.title(f'LCA and Feedback {array_name} (Free Phase)')
-        plt.savefig(save_path)
+        plt.savefig(save_path + '_free.png')
     
     plt.close()

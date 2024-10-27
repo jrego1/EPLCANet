@@ -297,12 +297,13 @@ class LCA_CNN(torch.nn.Module):
         return phi
     
 
-    def forward(self, x, y=0, neurons=None, T=29, beta=0.0, criterion=torch.nn.MSELoss(reduction='none'), scale_feedback=1.0):
+    def forward(self, x, y=0, neurons=None, T=29, beta=0.0, criterion=torch.nn.MSELoss(reduction='none'), scale_feedback=1.0, save_path = './'):
         global characteristic_param, characteristic_time, attack_param
         not_mse = (criterion.__class__.__name__.find('MSE')==-1)
         mbs = x.size(0)       
         conv_len = len(self.synapses) - 1 #5
         tot_len = len(self.synapses) #6
+        states_sum, feedback_sum = [], []
     
         self.poolsidx = self.init_poolidxs(mbs,x.device)
         unpools = make_unpools('mmmmm')
@@ -333,18 +334,19 @@ class LCA_CNN(torch.nn.Module):
         
             for idx in range(conv_len):
                 new_layers[idx],self.poolidxs[idx] = self.pools[idx](self.synapses[idx](layers[idx]))
-            #if beta!=0.0: feedback to LCA layer?
-            states = states + F.conv_transpose2d(layers[1] ,self.synapses[0].weight,padding=self.paddings[0])
+                
+            #if beta!=0.0:
+            feedback = F.conv_transpose2d(layers[1] ,self.synapses[0].weight,padding=self.paddings[0]) * scale_feedback
+            states = states + feedback
             states, _ = self.lca._to_correct_shape(states)
             
+            # Run LCA dynamics to settle a little after feedback
+            # states = states + (1 / self.lca.tau) * (input_drive - states - lateral_competition) 
             inputs,acts,recons,recon_errors,states = self.lca.encode(x, states)
             states = states[0].squeeze()
-            # Run LCA dynamics to settle a little after feedback
-            # for lca_iter in range(1, self.lca.lca_iters + 1): # LCA dynamics after adding feedback to settle
-            #     #input_drive is weights dot input image, what does that mean for 
-            #     acts = self.lca.transfer(states) # threshold feedback effected states
-            #     inhib = self.lca.lateral_competition(acts.unsqueeze(2), connectivity).squeeze()
-            #     states = states + (1 / self.lca.tau) * (input_drive - states - inhib) # input drive is similarity between image in put and dict elements
+            states_sum.append(states.sum().detach().cpu())
+            feedback_sum.append(feedback.sum().detach().cpu())
+            #print(states.sum(), feedback.sum())
 
             for idx in range(conv_len-1): 
                 # LCA acts not in new_layers? 
@@ -363,9 +365,7 @@ class LCA_CNN(torch.nn.Module):
                     cost = beta*torch.matmul((F.one_hot(y, num_classes=self.nc)-y_hat),self.synapses[-1].weight) # Compute cost from output
                     cost = cost.reshape(layers[-1].shape)
                     
-            # set layers to after evolving over t
             acts = acts[0].squeeze()
-
             layers[0] = acts.detach()
             
             for idx in range(tot_len-1): # 5
@@ -376,8 +376,10 @@ class LCA_CNN(torch.nn.Module):
                 
                 layers[idx+1].requires_grad = True               
             #print('END OF STEP ', t)
+            
+        plot_feedback(states_sum, feedback_sum, 'LCA States with Feedback from Conv Layers', save_path=save_path + 'statesfeedback', phase_2=False)
 
-        return layers,self.poolidxs, inputs, acts
+        return layers, self.poolidxs, inputs[0].squeeze(), acts
     
     def compute_syn_grads(self, x, y, neurons_1, neurons_2, betas, criterion, check_thm=False):
         
@@ -493,7 +495,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
             neurons = model.init_neurons(x)
             
             # First phase
-            neurons, poolidxs, lca_inputs, lca_acts = model(x, y, neurons, T1, beta=beta_1, criterion=criterion,scale_feedback=scale_feedback)
+            neurons, poolidxs, lca_inputs, lca_acts = model(x, y, neurons, T1, beta=beta_1, criterion=criterion,scale_feedback=scale_feedback, save_path=path)
             
             neurons_1 = copy(neurons)
 
@@ -508,26 +510,28 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
                 run_total += x.size(0)
                 if ((idx%(iter_per_epochs//10)==0) or (idx==iter_per_epochs-1)) and save:
                     plot_neural_activity(neurons, path)
+                    
             # Second phase
             if random_sign and (beta_1==0.0):
                 rnd_sgn = 2*np.random.randint(2) - 1
                 betas = beta_1, rnd_sgn*beta_2
                 beta_1, beta_2 = betas
-            print('phase 2')
-            neurons,poolidxs_2, inputs_2, acts_2 = model(x, y, neurons, T2, beta = beta_2, criterion=criterion)
+
+            neurons,poolidxs_2, inputs_2, acts_2 = model(x, y, neurons, T2, beta = beta_2, criterion=criterion, scale_feedback=scale_feedback, save_path=path)
                 
             neurons_2 = copy(neurons)
             
             # Third phase (if we approximate f' as f'(x) = (f(x+h) - f(x-h))/2h)
             if thirdphase:
                 #come back to the first equilibrium
-                print('phase 3')
                 neurons = copy(neurons_1)
-                neurons,poolidxs_3, inputs_3, acts_3 = model(x, y, neurons, T2, beta = -beta_2, criterion=criterion, scale_feedback=scale_feedback)
+                neurons,poolidxs_3, inputs_3, acts_3 = model(x, y, neurons, T2, beta = -beta_2, criterion=criterion, scale_feedback=scale_feedback, save_path=path)
 
                 neurons_3 = copy(neurons)
-                print('update weights')
                 model.compute_syn_grads_alternate(x, y, acts_2, acts_3,neurons_2, neurons_3, poolidxs_2, poolidxs_3, (beta_2, - beta_2), criterion)
+                
+                # Fine tune LCA dictionary, maybe move this to after update
+                model.compute_lca_update(inputs_2, acts_2, inputs_3, acts_3, (beta_2, - beta_2))
                 #model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, - beta_2), criterion)
                 #else:    
                 #    model.compute_syn_grads(x, y, neurons_1, neurons_2, (beta_2, - beta_2), criterion, neurons_3=neurons_3)
