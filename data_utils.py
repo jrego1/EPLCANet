@@ -217,7 +217,6 @@ def plot_lca_weights(model, path=None):
     if path is not None:
         plt.savefig(path)
 
-
 def plot_lca_acts(acts, threshold=0.1):
     """
     Plot a histogram of the number of images each dictionary element in the LCA layer is active.
@@ -263,7 +262,6 @@ def plot_lines(line_1, line_2, title, label_1, label_2, x_label, y_label, path):
 
 
 def createHyperparametersFile(path, args, model, command_line):
-    open(path + 'hyperparameters.txt', 'a').close()
 
     hyperparameters = open(path + "hyperparameters.txt", "w")
     L = [
@@ -289,6 +287,17 @@ def createHyperparametersFile(path, args, model, command_line):
         "- epochs: {}".format(args.epochs) + "\n",
         "- seed: {}".format(args.seed) + "\n",
         "- device: {}".format(args.device) + "\n",
+        "- lca_feats: {}".format(args.lca_feats) + "\n",
+        "- lca_lambda: {}".format(args.lca_lambda) + "\n",
+        "- lca_tau: {}".format(args.lca_tau) + "\n",
+        "- lca_eta: {}".format(args.lca_eta) + "\n",
+        "- lca_stride: {}".format(args.lca_stride) + "\n",
+        "- lca_ksize: {}".format(args.lca_ksize) + "\n",
+        "- lca_iters: {}".format(args.lca_iters) + "\n",
+        "- scale_feedback: {}".format(args.scale_feedback) + "\n",
+        "- dict_training: {}".format(args.dict_training) + "\n",
+        
+        
     ]
 
     print(command_line, "\n", file=hyperparameters)

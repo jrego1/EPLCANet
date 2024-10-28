@@ -30,6 +30,8 @@ from lcapt.metric import compute_l1_sparsity, compute_l2_error, compute_times_ac
 
 EPOCHS = 35
 DEVICE = 1
+subset_train = 0.5
+
 
 FEATURES = 64  # number of dictionary features to learn
 KERNEL_SIZE = 9  # height and width of each feature
@@ -65,7 +67,7 @@ class InputNorm(nn.Module):
 lca = LCAConv2D(
             out_neurons=FEATURES,
             in_neurons=3,
-            result_dir= PATH + 'standard_dictlearning/',
+            result_dir= PATH + 'subset_dictlearning/',
             kernel_size=KERNEL_SIZE,
             stride=STRIDE,
             lambda_=LAMBDA,
@@ -94,17 +96,7 @@ if __name__ == "__main__":
             ),
         ]
     )
-    #else:
-        # transform_train = torchvision.transforms.Compose(
-        #     [
-        #         torchvision.transforms.ToTensor(),
-        #         torchvision.transforms.Normalize(
-        #             mean=(0.4914, 0.4822, 0.4465),
-        #             std=(3 * 0.2023, 3 * 0.1994, 3 * 0.2010),
-        #         ),
-        #     ]
-        # )
-
+    
     transform_test = torchvision.transforms.Compose(
         [
             torchvision.transforms.ToTensor(),
@@ -121,27 +113,18 @@ if __name__ == "__main__":
         transform=transform_train,
         download=True,
     )
-    cifar10_test_dset = torchvision.datasets.CIFAR10(
-        "/storage/jr3548@drexel.edu/eplcanet/data/cifar10_pytorch",
-        train=False,
-        transform=transform_test,
-        download=True,
-    )
 
-    # For Validation set
-    val_index = np.random.randint(10)
-    val_samples = list(range(5000 * val_index, 5000 * (val_index + 1)))
+    # train dictionary with a subset of data, we also need data to train EP and fine tune the dict, save indices to exclude from EP training
+    subset_size = int(subset_train * len(cifar10_train_dset))
+    random_indices = np.random.permutation(len(cifar10_train_dset))[:subset_size]
+    np.save(PATH +'subset_dictlearning/train_indices.npy', random_indices)
 
     # train_loader = torch.utils.data.DataLoader(cifar10_train_dset, batch_size=mbs, sampler = torch.utils.data.SubsetRandomSampler(val_samples), shuffle=False, num_workers=1)
     train_loader = torch.utils.data.DataLoader(
         cifar10_train_dset, batch_size=200, shuffle=True, num_workers=2, pin_memory=True, drop_last=True
 
     )
-    test_loader = torch.utils.data.DataLoader(
-        cifar10_test_dset, batch_size=200, shuffle=False, num_workers=2, pin_memory=True, drop_last=True
 
-    )
-    
 for epoch in range(EPOCHS):
     print(f'Epoch: {epoch}')
     if (epoch + 1) % (EPOCHS // 7) == 0:
@@ -151,7 +134,7 @@ for epoch in range(EPOCHS):
         x = make_unit_var(make_zero_mean(x))
         inputs, acts, recons, recon_errors, states = lca(x.to(DEVICE))
         lca.update_weights(acts, recon_errors)
-    #torch.save(lca, os.path.join(PATH + 'standard_dictlearning/', 'dictionary.pt'))
+    torch.save(lca, os.path.join(PATH + 'subset_dictlearning/', 'dictionary.pt'))
     
 #plot_activities(lca.module, PATH + "lca_activations.png")
 plot_lca_weights(lca, PATH + "lca_weights.png")
