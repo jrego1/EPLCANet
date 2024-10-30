@@ -4,6 +4,7 @@ import numpy as np
 import torchvision
 import torch.nn.functional as F
 import torch.nn as nn
+from torch.utils.data import Subset
 import argparse
 import matplotlib
 
@@ -252,6 +253,7 @@ elif args.dict_training == 'finetune':
     # LCA preprocessing > energy-based RCNN training with EqProp > dictionary finetuning with feedback
      from tuning_lca_utils_ep_fast import *
      pretrained=True
+     
 # elif args.dict_training == 'learn':
 #     from dictlearninglca_utils_ep_fast import *
 #     pretrained=False
@@ -334,15 +336,11 @@ if args.save:
     else:
         path = args.load_path
         
-    if not (os.path.exists(path)):
-        print("Creating directory :", path)
-        os.makedirs(path)
     run_num = len(os.listdir(path))
     path = path + f'run_{run_num}/'
-    os.makedirs(path + f'run_{run_num}/')
-
-
-    print("---------- saving at {} --------------".format(path))
+    print("Saving to:", path)
+    os.makedirs(path)
+    open(path + 'hyperparameters.txt', 'a').close()
 
 mbs = args.mbs
 if args.seed is not None:
@@ -440,6 +438,7 @@ elif args.task == "CIFAR10":
         transform=transform_train,
         download=True,
     )
+    
     cifar10_test_dset = torchvision.datasets.CIFAR10(
         "/storage/jr3548@drexel.edu/eplcanet/data/cifar10_pytorch",
         train=False,
@@ -447,6 +446,13 @@ elif args.task == "CIFAR10":
         download=True,
     )
 
+    dicttraining_indices = np.load('/storage/jr3548@drexel.edu/eplcanet/results/CIFAR10/subset_dictlearning/train_indices.npy')
+    print(f'Excluding {len(dicttraining_indices)} samples used to pretrain dictionary.')
+    
+    cifar10_train_dset = torch.utils.data.Subset(cifar10_train_dset, dicttraining_indices)
+
+    cifar10_train_dset.__setattr__("train", True)
+    
     val_index = np.random.randint(10)
     val_samples = list(range(5000 * val_index, 5000 * (val_index + 1)))
 
@@ -534,11 +540,8 @@ if args.load_path == "":
             ).to(device)
 
         elif args.model == "LCACNN":
-            #channels = [3]+args.channels
             channels = [lca_params['lca_feats']] + args.channels
             
-            #channels = args.channels
-
             model = LCA_CNN(args.device,
                 32,
                 channels,
@@ -664,6 +667,8 @@ if args.todo == "train":
     createHyperparametersFile(path, args, model, command_line)
 
     if args.todo == "train":
+        # Don't train EP on subset of data that dictionary was trained with?
+        
         train(
             model,
             optimizer,

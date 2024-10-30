@@ -14,6 +14,7 @@ import random
 from datetime import datetime
 from lcapt.lca import LCAConv2D
 from lcapt.analysis import make_feature_grid
+from lcapt.preproc import make_zero_mean, make_unit_var
 import time
 import math
 
@@ -417,3 +418,27 @@ def plot_feedback(lca_array, feedback_array, array_name='', save_path='./', phas
         plt.savefig(save_path + '_free.png')
     
     plt.close()
+    
+def plot_input_recons(inputs, recons_0, recons_t, save_path):
+    #Scale between 0-1
+    # inputs = (inputs - inputs.min()) / (inputs.max() - inputs.min())
+    # recons_0 = (recons_0 - recons_0.min()) / (recons_0.max() - recons_0.min())
+    # recons_t = (recons_t - recons_t.min()) / (recons_t.max() - recons_t.min())
+    
+    # print(inputs.min(), recons_0.min(), recons_t.min())
+    # print(inputs.max(), recons_0.max(), recons_t.max())
+    
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    axes[0].imshow(inputs)
+    axes[0].set_title(f'Input Image')
+    axes[0].axis('off')
+
+    axes[1].imshow(make_unit_var(recons_0))
+    axes[1].set_title(f'LCA Reconstruction ')
+    axes[1].axis('off')
+
+    axes[2].imshow(make_unit_var(recons_t))
+    axes[2].set_title(f'LCA Reconstruction after Feedback')
+    axes[2].axis('off')
+
+    plt.savefig(save_path)

@@ -69,10 +69,25 @@ class Identity2d(nn.Module):
 
     def forward(self, x, indices=None):
         # Generate dummy indices that match the shape of the input
+        
         x = torch.nn.Identity()(x)
-        indices = torch.arange(len(x))
+        # Create meshgrid for each dimension's indices
+        shape = x.shape
+        # Truly I don't think I need this, I can jsut s
+        indices = torch.meshgrid(
+            [torch.arange(dim_size) for dim_size in shape], indexing='ij'
+        )
+        
+        # Calculate a linear index for each element
+        index_tensor = (
+            indices[0] * (shape[1] * shape[2] * shape[3]) + 
+            indices[1] * (shape[2] * shape[3]) + 
+            indices[2] * shape[3] + 
+            indices[3]
+        )
+
         if self.return_indices:
-            return x, indices
+            return x, index_tensor
         else:
             return x
 
@@ -174,16 +189,19 @@ class LCA_CNN(torch.nn.Module):
                         return_vars=['inputs', 'acts', 'recons', 'recon_errors','states'],
                     )
             
-            pretrained_path = '/storage/jr3548@drexel.edu/eplcanet/results/CIFAR10/standard_dictlearning/'
-            print('Loading pretrained dictionary from: ')
+            pretrained_path = '/storage/jr3548@drexel.edu/eplcanet/results/CIFAR10/subset_dictlearning/'
+            print('Loading pretrained dictionary from: ', pretrained_path)
             ckpt = torch.load(os.path.join( pretrained_path, 'dictionary.pt'), map_location='cpu')
             self.lca.assign_weight_values(ckpt.weights)
             
             self.lca.to(device)
 
             size = size//self.lca.stride
+            
+        # Add identity layer from sparse to  
+        self.synapses.append(torch.nn.Identity())
 
-        for idx in range(len(channels)-1): 
+        for idx in range(1, len(channels)-1): 
             self.synapses.append(torch.nn.Conv2d(channels[idx], channels[idx+1], kernels[idx], 
                                                  stride=strides[idx], padding=paddings[idx], bias=True))
                 
@@ -207,10 +225,14 @@ class LCA_CNN(torch.nn.Module):
             # ** include LCA activations in system
             append(torch.zeros((mbs, self.lca.out_neurons, size, size), requires_grad=True,  device=device))
         
+        # Identity
+        #append(torch.zeros((mbs, self.channels[1], size, size), requires_grad=True,  device=device))
+        
         for idx in range(len(self.channels)-1): 
             size = int( (size + 2*self.paddings[idx] - self.kernels[idx])/self.strides[idx] + 1 )   # size after conv
             if self.pools[idx].__class__.__name__.find('Pool')!=-1:
                 size = int( (size - self.pools[idx].kernel_size)/self.pools[idx].stride + 1 )  # size after Pool
+            
             append(torch.zeros((mbs, self.channels[idx+1], size, size),  device=device))
 
         size = size * size * self.channels[-1]
@@ -226,7 +248,6 @@ class LCA_CNN(torch.nn.Module):
         return
     
     def init_neurons(self, x):
-        
         mbs=x.size(0)
         device=x.device
         neurons = []
@@ -236,9 +257,12 @@ class LCA_CNN(torch.nn.Module):
             size = size//self.lca.stride
             # ** include LCA activations in system
             append(torch.zeros((mbs, self.lca.out_neurons, size, size), requires_grad=True,  device=device))
+            #append(torch.zeros((mbs, self.lca.out_neurons, size, size), requires_grad=True,  device=device))
 
-        
-        for idx in range(len(self.channels)-1): 
+        # Identity layer
+        #append(torch.zeros((mbs, self.channels[1], size, size), requires_grad=True,  device=device))
+
+        for idx in range(1, len(self.channels)-1): 
             size = int( (size + 2*self.paddings[idx] - self.kernels[idx])/self.strides[idx] + 1 )   # size after conv
             if self.pools[idx].__class__.__name__.find('Pool')!=-1:
                 size = int( (size - self.pools[idx].kernel_size)/self.pools[idx].stride + 1 )  # size after Pool
@@ -253,7 +277,7 @@ class LCA_CNN(torch.nn.Module):
             # we *REMOVE* the output layer from the system
             for idx in range(len(self.fc) - 1):
                 append(torch.zeros((mbs, self.fc[idx]), requires_grad=True, device=device))            
-          
+
         return neurons
 
     def Phi(self, x, y, neurons, beta, criterion):
@@ -304,9 +328,9 @@ class LCA_CNN(torch.nn.Module):
         conv_len = len(self.synapses) - 1 #5
         tot_len = len(self.synapses) #6
         states_sum, feedback_sum = [], []
-    
+        states_sum, feedback_sum = [], []
         self.poolsidx = self.init_poolidxs(mbs,x.device)
-        unpools = make_unpools('mmmmm')
+        unpools = make_unpools('immmm')
         for idx in range(len(self.pools)):
             self.pools[idx].return_indices = True
         
@@ -315,42 +339,45 @@ class LCA_CNN(torch.nn.Module):
 
 
         #layers = [acts] + neurons
-        layers = neurons
+        #layers = neurons
         
-        connectivity = self.lca.compute_lateral_connectivity(self.lca.weights)
-        input_drive = self.lca.compute_input_drive(x, self.lca.weights)
-        
-        layers[0] = acts
+        connectivity = self.lca.compute_lateral_connectivity(self.lca.weights)#.squeeze()
+        input_drive = self.lca.compute_input_drive(x, self.lca.weights)#.squeeze()
+        input_drive = self.lca._to_correct_shape(input_drive)[0]
+        states = self.lca._to_correct_shape(states)[0]
 
-        self.lca.lca_iters = 10
+        # Add copy of static acts as input
+        # We evolve copy of acts in layer[1] over t to get the evolved, nudged acts to update dict
+        layers = [acts.detach()] + neurons
         
         new_layers = [] # tendency of neurons
-        x, reshape_func = self.lca._to_correct_shape(x)
         for neuron in neurons: # exclude input layer
             new_layers.append(torch.zeros_like(neuron, device=x.device))
-            
+
         for t in range(T):
             cost = 0
-        
-            for idx in range(conv_len):
-                new_layers[idx],self.poolidxs[idx] = self.pools[idx](self.synapses[idx](layers[idx]))
-                
-            #if beta!=0.0:
-            feedback = F.conv_transpose2d(layers[1] ,self.synapses[0].weight,padding=self.paddings[0]) * scale_feedback
-            states = states + feedback
-            states, _ = self.lca._to_correct_shape(states)
             
-            # Run LCA dynamics to settle a little after feedback
-            # states = states + (1 / self.lca.tau) * (input_drive - states - lateral_competition) 
-            inputs,acts,recons,recon_errors,states = self.lca.encode(x, states)
-            states = states[0].squeeze()
-            states_sum.append(states.sum().detach().cpu())
-            feedback_sum.append(feedback.sum().detach().cpu())
-            #print(states.sum(), feedback.sum())
+            # Set new_layers to activations, we will let these get feedback
+            for idx in range(conv_len):
+                # Layers 0 is acts from intial run, no feedback. Input should be held constant during evolution over t.
+                # new_layers is identity(activations), include here to get feedback with rest of system
+                new_layers[idx],self.poolidxs[idx] = self.pools[idx](self.synapses[idx](layers[idx]))
 
             for idx in range(conv_len-1): 
-                # LCA acts not in new_layers? 
-                new_layers[idx] = new_layers[idx] + F.conv_transpose2d(unpools[idx](layers[idx+2],self.poolidxs[idx+1]),self.synapses[idx+1].weight,padding=self.paddings[idx+1])
+                # LCA acts in new_layers? 
+                # new_layers[0] is activations, allowed to evolve normally with the rest of the system.
+                if idx == 0:                    
+                    #feedback = scale_feedback*F.conv_transpose2d(layers[idx+2],self.synapses[idx+1].weight,padding=self.paddings[idx+1])
+                    feedback = F.conv_transpose2d(layers[idx+2],self.synapses[idx+1].weight,padding=self.paddings[idx+1])
+                    new_layers[idx] = new_layers[idx] + feedback
+                    #print('feedback to LCA', feedback.sum())
+                    states_sum.append(new_layers[idx].sum().detach().cpu())
+                    feedback_sum.append(feedback.sum().detach().cpu())
+                else:
+                    feedback = F.conv_transpose2d(unpools[idx+1](layers[idx+2],self.poolidxs[idx+1].to(x.device)).to(x.device),self.synapses[idx+1].weight,padding=self.paddings[idx+1])
+                    #print(f'feedback to {idx}', feedback.sum())
+                    new_layers[idx] = new_layers[idx] + F.conv_transpose2d(unpools[idx+1](layers[idx+2],self.poolidxs[idx+1].to(x.device)).to(x.device),self.synapses[idx+1].weight,padding=self.paddings[idx+1])
+            
             if(tot_len-conv_len!=1):
                 new_layers[conv_len-1] = new_layers[conv_len-1] + torch.matmul(layers[conv_len+1],self.synapses[conv_len].weight).reshape(new_layers[conv_len-1].shape)       
             
@@ -363,23 +390,38 @@ class LCA_CNN(torch.nn.Module):
                 if beta!=0.0:
                     y_hat = F.softmax(self.synapses[-1](layers[-1].view(x.size(0),-1)), dim = 1)  # Apply fc layer
                     cost = beta*torch.matmul((F.one_hot(y, num_classes=self.nc)-y_hat),self.synapses[-1].weight) # Compute cost from output
-                    cost = cost.reshape(layers[-1].shape)
-                    
-            acts = acts[0].squeeze()
-            layers[0] = acts.detach()
+                    cost = cost.reshape(layers[-1].shape)  
             
             for idx in range(tot_len-1): # 5
-                if idx==tot_len-2 and beta!=0: # 4
+                if idx==tot_len-2 and beta!=0: # 4 
                     layers[idx+1] = self.activation(new_layers[idx]+cost).detach()
+                    
                 else:
-                    layers[idx+1] = self.activation(new_layers[idx]).detach()
-                
-                layers[idx+1].requires_grad = True               
-            #print('END OF STEP ', t)
-            
-        plot_feedback(states_sum, feedback_sum, 'LCA States with Feedback from Conv Layers', save_path=save_path + 'statesfeedback', phase_2=False)
+                    # if idx == 0: # relu on evolved lca activation-like neurons? 
+                    #     #layers[idx+1] = soft_threshold(new_layers[idx], self.lca.lambda_).squeeze().detach()
+                    #     #states = states + (1 / self.lca.tau) * (input_drive - states - inhib)
 
-        return layers, self.poolidxs, inputs[0].squeeze(), acts
+                    #     # layers[1] = evolved LCA activations
+                    #     layers[idx+1] = new_layers[idx].detach()
+                    # else:
+                    layers[idx+1] = self.activation(new_layers[idx]).detach()    
+                                    
+                layers[idx+1].requires_grad = True       
+                        
+            if beta != 0.0:
+                plot_feedback(states_sum, feedback_sum, '(sum)', save_path=save_path + f'feedback{beta}', phase_2=True)
+            else:
+                plot_feedback(states_sum, feedback_sum, '(sum)', save_path=save_path + f'feedback')
+
+            
+        # Run LCA dynamics? Encode evolved acts before passing to weight updates?
+        #inhib = self.lca.lateral_competition(acts, connectivity) # Lateral competition on acts after feedback
+        #states = states + (1 / self.lca.tau) * (input_drive - states - inhib)
+        #acts = soft_threshold(states, self.lca.lambda_).squeeze()
+        
+        # acts is original activations from lca, layers[1] is evolved LCA activations
+        
+        return layers[1:], self.poolidxs, inputs[0].squeeze(), layers[0]
     
     def compute_syn_grads(self, x, y, neurons_1, neurons_2, betas, criterion, check_thm=False):
         
@@ -402,10 +444,11 @@ class LCA_CNN(torch.nn.Module):
 
     def compute_syn_grads_alternate(self, x, y, acts_1, acts_2, neurons_1, neurons_2,pools_idx_1, pools_idx_2, betas, criterion, check_thm=False):
         #maybe include acts in neurons, return from forward
-        # neurons_1 = [acts_1.detach()] + neurons_1
-        # neurons_2 = [acts_2.detach()] + neurons_2
+        neurons_1 = [acts_1.detach()] + neurons_1
+        neurons_2 = [acts_2.detach()] + neurons_2
 
-        for i in range(len(self.kernels)):
+        # DONT update synapses[0] Identity
+        for i in range(1, len(self.kernels)):
             temp1 = F.conv2d(neurons_1[i].permute(1,0,2,3),self.unpools[i](neurons_1[i+1], pools_idx_1[i]).permute(1,0,2,3),stride=1,padding=self.paddings[i]).permute(1,0,2,3)
             temp2 = F.conv2d(neurons_2[i].permute(1,0,2,3),self.unpools[i](neurons_2[i+1], pools_idx_2[i]).permute(1,0,2,3),stride=1,padding=self.paddings[i]).permute(1,0,2,3)
             self.synapses[i].weight.grad = (temp1-temp2)/((betas[1]-betas[0])*x.size(0))
@@ -475,11 +518,13 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
     
     
     print(model)
+    
+    
     mbs = train_loader.batch_size
     start = time.time()
     iter_per_epochs = math.ceil(len(train_loader.dataset)/mbs)
     beta_1, beta_2 = betas
-    norm_layer = Normalize(mean, std)
+    image_index = 0
 
     df = pd.DataFrame(columns=['Train Accuracy', 'Validation Accuracy', 'Train Sparsity', 'Validation Sparsity', 'Train Reconstruction Error', 'Validation Reconstruction Error'])
 
@@ -488,16 +533,20 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
         run_correct = 0
         run_total = 0
         model.train()
-
+        plot_lca_weights(model, path + 'lcaweights_epoch_' + str(epoch) + '.png')
         for idx, (x, y) in enumerate(train_loader):
             x, y = x.to(device), y.to(device)
             
             neurons = model.init_neurons(x)
             
             # First phase
-            neurons, poolidxs, lca_inputs, lca_acts = model(x, y, neurons, T1, beta=beta_1, criterion=criterion,scale_feedback=scale_feedback, save_path=path)
-            
+            neurons, poolidxs, inputs, acts = model(x, y, neurons, T1, beta=beta_1, criterion=criterion,scale_feedback=scale_feedback, save_path=path)
+            #print('p1 a0', acts.sum())
+            #print('p1 a*', neurons[0].sum())
             neurons_1 = copy(neurons)
+            
+            recon_0 = model.lca.compute_recon(acts, model.lca.weights)
+            recon_nudged = model.lca.compute_recon(neurons[0], model.lca.weights)
 
             # Predictions for running accuracy
             with torch.no_grad():
@@ -510,6 +559,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
                 run_total += x.size(0)
                 if ((idx%(iter_per_epochs//10)==0) or (idx==iter_per_epochs-1)) and save:
                     plot_neural_activity(neurons, path)
+                    plot_lca_weights(model, path + 'current_lcaweights.png')
                     
             # Second phase
             if random_sign and (beta_1==0.0):
@@ -517,8 +567,18 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
                 betas = beta_1, rnd_sgn*beta_2
                 beta_1, beta_2 = betas
 
-            neurons,poolidxs_2, inputs_2, acts_2 = model(x, y, neurons, T2, beta = beta_2, criterion=criterion, scale_feedback=scale_feedback, save_path=path)
-                
+            neurons, poolidxs_2, inputs_2, acts_2 = model(x, y, neurons, T2, beta = beta_2, criterion=criterion, scale_feedback=scale_feedback, save_path=path)
+           
+            recon_0 = model.lca.compute_recon(acts_2, model.lca.weights)
+            recon_nudged = model.lca.compute_recon(neurons[0], model.lca.weights)
+
+            # normalize? 
+            input_sample = (x.permute(0,2,3,1)[image_index])
+            recon_sample = (recon_0.permute(0,2,3,1)[image_index]) # Reconstruction with activations before energy evolution steps 
+            recon_nudged = (recon_nudged.permute(0,2,3,1)[image_index]) # Reconstruction with activations after energy evolution steps
+            
+            plot_input_recons(input_sample.detach().cpu(), recon_sample.detach().cpu(), recon_nudged.detach().cpu(), path + 'recons_nudgedepoch_' + str(epoch) + '.png')
+
             neurons_2 = copy(neurons)
             
             # Third phase (if we approximate f' as f'(x) = (f(x+h) - f(x-h))/2h)
@@ -526,17 +586,22 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
                 #come back to the first equilibrium
                 neurons = copy(neurons_1)
                 neurons,poolidxs_3, inputs_3, acts_3 = model(x, y, neurons, T2, beta = -beta_2, criterion=criterion, scale_feedback=scale_feedback, save_path=path)
-
                 neurons_3 = copy(neurons)
-                model.compute_syn_grads_alternate(x, y, acts_2, acts_3,neurons_2, neurons_3, poolidxs_2, poolidxs_3, (beta_2, - beta_2), criterion)
                 
-                # Fine tune LCA dictionary, maybe move this to after update
-                model.compute_lca_update(inputs_2, acts_2, inputs_3, acts_3, (beta_2, - beta_2))
+                # acts 3? acts 1?
+                
+                model.compute_syn_grads_alternate(x, y, acts_2, acts_3, neurons_2, neurons_3, poolidxs_2, poolidxs_3, (beta_2, - beta_2), criterion)
+                
+                # Fine tune LCA dictionary (inputs returned from LCA might be weird)
+                #model.compute_lca_update(inputs_2, acts_2, inputs_3, acts_3, (beta_2, - beta_2))
                 #model.compute_syn_grads(x, y, neurons_2, neurons_3, (beta_2, - beta_2), criterion)
                 #else:    
                 #    model.compute_syn_grads(x, y, neurons_1, neurons_2, (beta_2, - beta_2), criterion, neurons_3=neurons_3)
             else:
                 model.compute_syn_grads(x, y, neurons_1, neurons_2, betas, criterion)
+                
+            # Or fine tune LCA dictionary after mbs EP updates
+            # model.compute_lca_update(inputs_2, acts_2, inputs_3, acts_3, (beta_2, - beta_2))
                 
             optimizer.step()      
 
@@ -546,6 +611,8 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
                     '\tRun train acc :', round(run_acc,3),'\t('+str(run_correct)+'/'+str(run_total)+')\t',
                     timeSince(start, ((idx+1)+epoch*iter_per_epochs)/(epochs*iter_per_epochs)))
                 plot_neural_activity(neurons, path)
+                #plot_lca_weights(model, path + f'e{str(epoch)}_lcaweights.png')
+
 
         if scheduler is not None:
             if epoch < scheduler.T_max:
@@ -592,12 +659,13 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
 
 def evaluate(model, loader, T, device,mean=0,std=0):
     # Evaluate the model on a dataloader with T steps for the dynamics
+    
+    torch.cuda.empty_cache()
+    
     model.eval()
-    norm_layer = Normalize(mean, std)
     correct=0
     phase = 'Test'
     run_total = 0
-    start_time = time.time()
 
     for x, y in loader:
         x, y = x.to(device), y.to(device)
