@@ -243,27 +243,26 @@ command_line = " ".join(sys.argv)
 
 print('Dictionary training: ', args.dict_training)
 
-if args.dict_training == 'pretrained':
-    # LCA preprocessing > energy-based RCNN training with EqProp
-    #from pretrainedlca_utils_ep_fast import *
-    from lca_utils_ep_fast import *
-    pretrained=True
-
-elif args.dict_training == 'finetune':
-    # LCA preprocessing > energy-based RCNN training with EqProp > dictionary finetuning with feedback
-     from tuning_lca_utils_ep_fast import *
-     pretrained=True
-     
-# elif args.dict_training == 'learn':
-#     from dictlearninglca_utils_ep_fast import *
-#     pretrained=False
-
-elif args.dict_training == '':
+if args.dict_training == '':
     # Energy-based RCNN training with EqProp
     from utils_ep_fast import *
     pretrained=True
-    
+    finetune=False
 
+else:
+    # LCA preprocessing > energy-based RCNN training with EqProp
+    from lca_utils_ep_fast import *
+    if args.dict_training == 'pretrained':
+        pretrained=True
+        finetune=False
+    elif args.dict_training == 'finetune':
+        pretrained=True
+        finetune=True
+
+# elif args.dict_training == 'learn':
+#     from dictlearninglca_utils_ep_fast import *
+#     pretrained=False
+    
 print("\n")
 print(command_line)
 print("\n")
@@ -503,7 +502,8 @@ if args.load_path == "":
                 softmax=args.softmax,
                 scale_feedback=args.scale_feedback,
                 pretrain_dict=pretrained,
-                lca_params = lca_params
+                lca_params = lca_params,
+                finetune=finetune
             )
             
         elif args.model == "CNN":
@@ -555,8 +555,8 @@ if args.load_path == "":
                 softmax=args.softmax,
                 scale_feedback=args.scale_feedback,
                 pretrain_dict=pretrained,
-                lca_params = lca_params
-                ).to(device)
+                lca_params = lca_params,
+                finetune=finetune).to(device)
 
     elif args.task == "imagenet": 
         pools = make_pools(args.pools)
@@ -592,7 +592,9 @@ if args.load_path == "":
                 paddings=args.paddings,
                 activation=activation,
                 softmax=args.softmax,
-                scale_feedback=args.scale_feedback
+                scale_feedback=args.scale_feedback,
+                lca_params = lca_params,
+                finetune=finetune
             ) 
         print("\n")
 
