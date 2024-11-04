@@ -147,7 +147,7 @@ class LCA_CNN(torch.nn.Module):
         self.softmax = softmax # whether to use softmax readout or not
         
         self.finetune = finetune
-        
+        self.pretrained = pretrain_dict
         if lca_params is not None:
 
             FEATURES = lca_params['lca_feats']  # number of dictionary features to learn
@@ -319,8 +319,6 @@ class LCA_CNN(torch.nn.Module):
         for neuron in neurons: # exclude input layer
             new_layers.append(torch.zeros_like(neuron, device=x.device))
             
-            
-            
         for t in range(T):
             cost = 0
             for idx in range(conv_len):
@@ -436,6 +434,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
                 run_total += x.size(0)
                 if ((idx%(iter_per_epochs//10)==0) or (idx==iter_per_epochs-1)) and save:
                     plot_neural_activity(neurons, path)
+                    
             # Second phase
             if random_sign and (beta_1==0.0):
                 rnd_sgn = 2*np.random.randint(2) - 1
@@ -472,30 +471,30 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
                 if model.finetune == True:
                     plot_lca_weights(model, path + 'lcaweights_epoch_' + str(epoch) + '.png')
 
-        if model.finetune == True:
-            # Fine tune LCA weights with nudged, evolved state of activation layer once per epoch, not every batch like EP layers
+        if model.finetune == True and model.pretrained == True: # Fine tune LCA weights with nudged, evolved state of activation layer once per epoch, not every batch like EP layers
             acts_star = model.lca.transfer(neurons_2[0])
             
             # Maybe I wan to run LCA dynamics once?
             # inhib = model.lca.lateral_competition(acts, connectivity)
             # states = states + (1 / model.lca.tau) * (input_drive - states - inhib)
-            
-            
             recon = model.lca.compute_recon(acts_star, model.lca.weights) 
-            recon_error = model.lca.compute_recon_error(inputs_3,recon)
-            update = model.lca.compute_weight_update(acts_3, recon_error) # update = acts . recon_error
-            times_active = compute_times_active_by_feature(acts_3) + 1 
-                
-            lca_update = (update / times_active) * model.lca.eta
-            model.lca.update_weights_EP(update)
+            recon_error = model.lca.compute_recon_error(inputs_3,recon) # update = acts . recon_error
+            model.lca.update_weights(acts_3, recon_error)
 
+        elif model.finetune == True and model.pretrained == False: # Learn dictionary entirely during RCNN training
+            acts_star = model.lca.transfer(neurons_2[0])
+            
+            # Maybe I wan to run LCA dynamics once?
+            # inhib = model.lca.lateral_competition(acts, connectivity)
+            # states = states + (1 / model.lca.tau) * (input_drive - states - inhib)
+            recon = model.lca.compute_recon(acts_star, model.lca.weights) 
+            recon_error = model.lca.compute_recon_error(inputs_3,recon) # update = acts . recon_error
+            model.lca.update_weights(acts_3, recon_error)
+            
 
         if scheduler is not None:
             if epoch < scheduler.T_max:
                 scheduler.step()
-
-
-
 
         test_correct, test_inputs, test_acts = evaluate(model, test_loader, T1, device,mean=mean,std=std)
         test_acc = test_correct/(len(test_loader.dataset)) * 100

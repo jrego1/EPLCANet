@@ -160,6 +160,7 @@ parser.add_argument(
 )
 parser.add_argument("--seed", type=int, default=None, metavar="s", help="random seed")
 parser.add_argument("--device", type=int, default=0, metavar="d", help="device")
+
 parser.add_argument(
     "--thirdphase",
     default=False,
@@ -172,12 +173,7 @@ parser.add_argument(
     action="store_true",
     help="softmax loss with parameters (default: False)",
 )
-parser.add_argument(
-    "--same-update",
-    default=False,
-    action="store_true",
-    help="same update is applied for VFCNN back and forward",
-)
+
 parser.add_argument("--cep-debug", default=False, action="store_true", help="debug cep")
 
 parser.add_argument(
@@ -227,14 +223,6 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--dict_loss",
-    type=str,
-    default="recon",
-    metavar="dl",
-    help="Dictionary update loss.",
-)
-
-parser.add_argument(
     "--scale_feedback", type=float, default=1.0, metavar="sf", help="Weight of convolutional feedback connections to LCA membrane potentials."
 )
 
@@ -243,14 +231,12 @@ command_line = " ".join(sys.argv)
 
 print('Dictionary training: ', args.dict_training)
 
-if args.dict_training == '':
-    # Energy-based RCNN training with EqProp
+if args.dict_training == '': # Energy-based RCNN training with EqProp
     from utils_ep_fast import *
     pretrained=True
     finetune=False
 
-else:
-    # LCA preprocessing > energy-based RCNN training with EqProp
+else: # LCA preprocessing > energy-based RCNN training with EqProp
     from lca_utils_ep_fast import *
     if args.dict_training == 'pretrained':
         pretrained=True
@@ -258,10 +244,9 @@ else:
     elif args.dict_training == 'finetune':
         pretrained=True
         finetune=True
-
-# elif args.dict_training == 'learn':
-#     from dictlearninglca_utils_ep_fast import *
-#     pretrained=False
+    elif args.dict_training == 'learn':
+        pretrained=False
+        finetune=True
     
 print("\n")
 print(command_line)
