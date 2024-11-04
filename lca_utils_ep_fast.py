@@ -176,10 +176,11 @@ class LCA_CNN(torch.nn.Module):
                         return_vars=['inputs', 'acts', 'recons', 'recon_errors','states'],
                     )
             
-            pretrained_path = '/storage/jr3548@drexel.edu/eplcanet/results/CIFAR10/standard_dictlearning/'
-            print('Loading pretrained dictionary from: ')
-            ckpt = torch.load(os.path.join( pretrained_path, 'dictionary.pt'), map_location='cpu')
-            self.lca.assign_weight_values(ckpt.weights)
+            if pretrain_dict is True:
+                pretrained_path = '/storage/jr3548@drexel.edu/eplcanet/results/CIFAR10/standard_dictlearning/'
+                print('Loading pretrained dictionary from: ')
+                ckpt = torch.load(os.path.join( pretrained_path, 'dictionary.pt'), map_location='cpu')
+                self.lca.assign_weight_values(ckpt.weights)
             
             self.lca.to(device)
 
