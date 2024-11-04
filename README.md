@@ -4,30 +4,28 @@ This repository contains code to train an energy-based model with a sparse codin
 - main_fast.py: parses shell scripts, constructs model, optimizers, runs model from appropriate utils.py
 - cifar_dictlearning.py: script to train a sparse coding dictionary with the Locally Competitive Algorithm 
 - utils_ep_fast.py: functions to build and train an energy-based recurrent convolutional neural network (RCNN) with image input
-- pretrainedlca_utils_ep_fast.py: functions to build and train an energy-based RCNN with a front sparse coding layer. The *pretrained* sparse dictionary is held fixed during EBM training with equilibrium propagation and preprocesses inputs with LCA dynamics.
+- lca_utils_ep.fast: functions to build and train an energy-based RCNN with a front sparse coding layer. Options to use a *pretrained* sparse dictionary, which is held fixed during EBM training with equilibrium propagation and preprocesses inputs with LCA dynamics or learn the sparse dictionary during RCNN training (*work in progress*) .
 - data_utils.py: plotting and logging functions
+- eval_lcanet.ipynb: evaluating and plotting trained model results 
 - run/: shell scripts for running models and experiments
 
 
-*** *work in progress* *** *(TODO: Build and train an energy-based recurrent convolutional neural network (RCNN) with a front sparse coding layer using equilibrium propagation. *Tune* the sparse dictionary for classification by introducing feedback to activations during EBM training with equilibrium propagation.)* *** *work in progress* *** 
+![image LCA-RCNN framework](./LCA-RCNN.pdf)
 
-### LCA Sparse Coding PyTorch Implementation
-This repository leverages functions from lca-pytorch.
+Figure: Our framework for training an energy-based model and fine tuning a sparse coding dictionary for image classification. a) Image inputs, $x$, drive the dynamics of the locally competitive algorithm over $T_{LCA}$ timesteps, settling to a sparse set of activations that minimize reconstruction error when combined with a pre-trained dictionary, $D$. b) Sparse activations $a(t), t = T_{LCA}$ are passed to an energy-based recurrent model, which we train for classification with EqProp. Input activations are held static while a copy of the sparse activations is allowed to evolve with the energy based system. In the second phase of EqProp, the output of the network is nudged based on classification loss and settles to a new configuration, $s_*^\beta$. c) During EBM training with EqProp, the nudged, settled state of the sparse activation-like layer, $s_*^{\beta, 0}$, is used to fine-tune the sparse coding dictionary $D_*$.
 
-https://github.com/lanl/lca-pytorch
-
-### EqProp Implementation similar to "Scaling Equilibrium Propagation to Deep ConvNets by Drastically Reducing its Gradient Estimator Bias"
-
-This repository contains some code reworked from https://github.com/Laborieux-Axel/Equilibrium-Propagation, which produced the results of [the paper](https://arxiv.org/abs/2006.03824) "Scaling Equilibrium Prop to Deep ConvNets by Drastically Reducing its Gradient Estimator Bias". 
-
-## Training
-
-### Training RCNN using EqProp with symmetric connections
+## Training using EqProp with symmetric connections
+#### RCNN
     python main_fast.py --model 'CNN' --task 'CIFAR10' --data-aug --channels 64 128 256 512 --kernels 3 3 3 3 --pools 'mmmm' --strides 1 1 1 1 --paddings 1 1 1 1 --fc 10 --optim 'sgd' --lrs 0.25 0.15 0.1 0.08 0.05 --wds 3e-4 3e-4 3e-4 3e-4 3e-4  --mmt 0.9 --lr-decay --epochs 35 --act 'my_hard_sig' --todo 'train' --T1 250 --T2 50 --mbs 128 --alg 'EP' --betas 0.0 1.0 --thirdphase --loss 'cel' --softmax --save
 
-### Training RCNN with a (pretrained) LCA preprocessing layer using EqProp with symmetric connections
+#### RCNN with a (pretrained) LCA preprocessing layer
+    python main_fast.py --model LCACNN --task CIFAR10 --data-aug --channels 64 256 512 --kernels 3 3 3 --pools immmm --strides 1 1 1 1 --paddings 1 1 1 1 --fc 10 --optim sgd --lrs 0.25 0.15 0.1 0.08 --wds 3e-4 3e-4 3e-4 3e-4 3e-4 --mmt 0.9 --lr-decay --epochs 120 --act my_hard_sig --todo train --T1 250 --T2 50 --mbs 128 --alg EP --betas 0.0 0.5 --scale 0.5 --thirdphase --loss cel --softmax --save --seed 2 --lca_feats 64 --lca_lambda 0.25 --lca_tau 100 --lca_eta 0.05 --lca_iters 600 --lca_stride 2 --lca_ksize 9 --dict_training pretrained
 
+#### RCNN and tuning the dictionary of an LCA preprocessing layer
+    python main_fast.py --model LCACNN --task CIFAR10 --data-aug --channels 64 256 512 --kernels 3 3 3 --pools immmm --strides 1 1 1 1 --paddings 1 1 1 1 --fc 10 --optim sgd --lrs 0.25 0.15 0.1 0.08 --wds 3e-4 3e-4 3e-4 3e-4 3e-4 --mmt 0.9 --lr-decay --epochs 120 --act my_hard_sig --todo train --T1 250 --T2 50 --mbs 128 --alg EP --betas 0.0 0.5  --scale 0.5 --thirdphase --loss cel --softmax --save --seed 2 --lca_feats 64 --lca_lambda 0.25 --lca_tau 100 --lca_eta 0.05 --lca_iters 600 --lca_stride 2 --lca_ksize 9 --dict_training finetune 
 
+#### RCNN and learning the dictionary of an LCA preprocessing layer
+    python main_fast.py --model LCACNN --task CIFAR10 --data-aug --channels 64 256 512 --kernels 3 3 3 --pools immmm --strides 1 1 1 1 --paddings 1 1 1 1 --fc 10 --optim sgd --lrs 0.25 0.15 0.1 0.08 --wds 3e-4 3e-4 3e-4 3e-4 3e-4 --mmt 0.9 --lr-decay --epochs 120 --act my_hard_sig --todo train --T1 250 --T2 50 --mbs 128 --alg EP --betas 0.0 0.5 --scale 0.5 --thirdphase --loss cel --softmax --save --seed 2 --lca_feats 64 --lca_lambda 0.25 --lca_tau 100 --lca_eta 0.05 --lca_iters 600 --lca_stride 2 --lca_ksize 9 --dict_training learn
 
 ## Summary table of command line arguments  
 
@@ -62,12 +60,18 @@ This repository contains some code reworked from https://github.com/Laborieux-Ax
 |`lca_eta`|LCA eta.|`--lca_eta 0.001`|
 |`lca_stride`|LCA stride.|`--lca_stride 1`|
 |`lca_iters`|LCA iterations.|`--lca_iters 1`|
-|`dict_loss`|Dictionary update loss algorithm (reconstruction, classification, and both.|`--dict_loss 'recon'`|
 |`scale_feedback`|Factor to scale feedback from convolutional layers to LCA activations for fine tuning.|`--scale_feedback 0.01`|
-|`dict_training`|Static pretrained, fine-tune, or learn sparse coding dictionary during RCNN training. |` --dict_training pretrained_ep'`|
+|`dict_training`|Static pretrained, fine-tune, or learn sparse coding dictionary during RCNN training. |` --dict_training finetune'`|
 |`epochs`|Number of epochs.|`--epochs 200`|
 |`mbs`|Minibatch size|`--mbs 128`|
 |`device`|Index of the gpu.|`--device 0`|
 |`save`|Create a folder to save the model, plot metrics, neural activations, and LCA weights.|`--save`|
-|`load-path`|Resume the training of a saved simulations.|`--load-path 'results/2020-04-25/10-11-12'`|
 |`seed`|Choose the seed.|`--seed 0`|
+
+
+### LCA Sparse Coding PyTorch Implementation
+This repository leverages functions from lca-pytorch (https://github.com/lanl/lca-pytorch).
+
+### EqProp Implementation similar to "Scaling Equilibrium Propagation to Deep ConvNets by Drastically Reducing its Gradient Estimator Bias"
+
+This repository contains some code reworked from https://github.com/Laborieux-Axel/Equilibrium-Propagation, which produced the results of [the paper](https://arxiv.org/abs/2006.03824) "Scaling Equilibrium Prop to Deep ConvNets by Drastically Reducing its Gradient Estimator Bias". 
