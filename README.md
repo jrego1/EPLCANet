@@ -4,7 +4,7 @@ This repository contains code to train an energy-based model with a sparse codin
 - main_fast.py: parses shell scripts, constructs model, optimizers, runs model from appropriate utils.py
 - cifar_dictlearning.py: script to train a sparse coding dictionary with the Locally Competitive Algorithm 
 - utils_ep_fast.py: functions to build and train an energy-based recurrent convolutional neural network (RCNN) with image input
-- lca_utils_ep.fast: functions to build and train an energy-based RCNN with a front sparse coding layer. Options to use a *pretrained* sparse dictionary, which is held fixed during EBM training with equilibrium propagation and preprocesses inputs with LCA dynamics or learn the sparse dictionary during RCNN training (*work in progress*) .
+- lca_utils_ep.fast: functions to build and train an energy-based RCNN with a front sparse coding layer. Options to use a *pretrained* sparse dictionary, which is held fixed during EBM training with equilibrium propagation and preprocesses inputs with LCA dynamics or learn the sparse dictionary during RCNN training.
 - data_utils.py: plotting and logging functions
 - eval_lcanet.ipynb: evaluating and plotting trained model results 
 - run/: shell scripts for running models and experiments
@@ -12,7 +12,7 @@ This repository contains code to train an energy-based model with a sparse codin
 
 ![LCA-RCNN framework](./images/LCA-RCNN.jpg)
 
-Figure: Our framework for training an energy-based model and fine tuning a sparse coding dictionary for image classification. a) Image inputs, $x$, drive the dynamics of the locally competitive algorithm over $T_{LCA}$ timesteps, settling to a sparse set of activations that minimize reconstruction error when combined with a pre-trained dictionary, $D$. b) Sparse activations $a(t), t = T_{LCA}$ are passed to an energy-based recurrent model, which we train for classification with EqProp. Input activations are held static while a copy of the sparse activations is allowed to evolve with the energy based system. In the second phase of EqProp, the output of the network is nudged based on classification loss and settles to a new configuration, $s_*^beta$. c) During EBM training with EqProp, the nudged, settled state of the sparse activation-like layer, $s_*^beta, 0$, is used to fine-tune the sparse coding dictionary $D_*$.
+Figure: Our framework for training an energy-based model and fine tuning a sparse coding dictionary for image classification. a) Image inputs, $x$, drive the dynamics of the locally competitive algorithm over $T_{LCA}$ timesteps, settling to a sparse set of activations that minimize reconstruction error when combined with a pre-trained dictionary, $D$. b) Sparse activations $a(t), t = T_{LCA}$ are passed to an energy-based recurrent model, which we train for classification with EqProp. Input activations are held static while a copy of the sparse activations is allowed to evolve with the energy based system. In the second phase of EqProp, the output of the network is nudged based on classification loss and settles to a new configuration, {s_\*}^{beta}. c) During EBM training with EqProp, the nudged, settled state of the sparse activation-like layer, {s_\*}^{\beta, 0}, is used to fine-tune the sparse coding dictionary $D_\*$.
 
 ## Training using EqProp with symmetric connections
 #### RCNN
