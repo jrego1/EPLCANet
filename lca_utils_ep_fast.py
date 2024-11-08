@@ -210,7 +210,6 @@ class LCA_CNN(torch.nn.Module):
   
         if self.lca:
             size = size//self.lca.stride 
-            # ** include LCA activations in system (?)
             append(torch.zeros((mbs, self.lca.out_neurons, size, size), requires_grad=True,  device=device))
         
         for idx in range(1, len(self.channels)-1): 
@@ -224,8 +223,7 @@ class LCA_CNN(torch.nn.Module):
         if not self.softmax:
             for idx in range(len(self.fc)):
                 append(torch.zeros((mbs, self.fc[idx]),  device=device))
-        else:
-            # we *REMOVE* the output layer from the system
+        else: # we *REMOVE* the output layer from the system
             for idx in range(len(self.fc) - 1):
                 append(torch.zeros((mbs, self.fc[idx]), device=device))            
           
@@ -253,8 +251,7 @@ class LCA_CNN(torch.nn.Module):
         if not self.softmax:
             for idx in range(len(self.fc)):
                 append(torch.zeros((mbs, self.fc[idx]), requires_grad=True,  device=device))
-        else:
-            # we *REMOVE* the output layer from the system
+        else: # we *REMOVE* the output layer from the system
             for idx in range(len(self.fc) - 1):
                 append(torch.zeros((mbs, self.fc[idx]), requires_grad=True, device=device))            
           
@@ -267,7 +264,7 @@ class LCA_CNN(torch.nn.Module):
         tot_len = len(self.synapses)
 
         layers = [x] + neurons
-        phi = 0 #torch.zeros(x.shape[0], device=x.device, requires_grad=True)
+        phi = 0 
 
         #Phi computation changes depending on softmax == True or not
         if not self.softmax:
@@ -299,9 +296,9 @@ class LCA_CNN(torch.nn.Module):
         return phi
     
 
-    def forward(self, x, y=0, neurons=None, T=29, beta=0.0, criterion=torch.nn.MSELoss(reduction='none'), scale_feedback=1.0):
+    def forward(self, x, y=0, neurons=None, T=29, beta=0.0, criterion=torch.nn.MSELoss(reduction='none')):
         global characteristic_param, characteristic_time, attack_param
-        not_mse = (criterion.__class__.__name__.find('MSE')==-1)
+        attack = False # flag for adversarial attack generation
         mbs = x.size(0)       
         conv_len = len(self.synapses) - 1 #5
         tot_len = len(self.synapses) #6
@@ -310,8 +307,14 @@ class LCA_CNN(torch.nn.Module):
         unpools = make_unpools('mmmmm')
         for idx in range(len(self.pools)):
             self.pools[idx].return_indices = True
-        
-        #poolidxs = [[] for i in range(len(self.pools))]
+
+        if neurons == None:
+            neurons = self.init_neurons(x)
+            attack = True
+            
+        if isinstance(x, np.ndarray):
+            x = torch.from_numpy(x)
+
         inputs,acts,recons,recon_errors,states = self.lca(x)
 
         layers = [acts] + neurons
@@ -349,7 +352,12 @@ class LCA_CNN(torch.nn.Module):
                 
                 layers[idx+1].requires_grad = True
         
-        return layers[1:],self.poolidxs, inputs, acts
+        if attack == True: # only return last layer? I dont think that's right
+            y_hat = F.softmax(self.synapses[-1](layers[-1].view(x.size(0),-1)), dim = 1)  # Apply fc layer
+            pred = torch.matmul((F.one_hot(y, num_classes=self.nc)-y_hat),self.synapses[-1].weight)
+            return torch.tensor(layers[1:]).to(x.device)
+        else:
+            return layers[1:], self.poolidxs, inputs, acts
     
     def compute_syn_grads(self, x, y, neurons_1, neurons_2, betas, criterion, check_thm=False):
         
@@ -420,7 +428,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
             neurons = model.init_neurons(x)
             
             # First phase
-            neurons, poolidxs, lca_inputs, lca_acts = model(x, y, neurons, T1, beta=beta_1, criterion=criterion,scale_feedback=scale_feedback)
+            neurons, poolidxs, lca_inputs, lca_acts = model(x, y, neurons, T1, beta=beta_1, criterion=criterion)
             
             neurons_1 = copy(neurons)
 
@@ -450,7 +458,7 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
             if thirdphase:
                 #come back to the first equilibrium
                 neurons = copy(neurons_1)
-                neurons,poolidxs_3, inputs_3, acts_3 = model(x, y, neurons, T2, beta = -beta_2, criterion=criterion, scale_feedback=scale_feedback)
+                neurons,poolidxs_3, inputs_3, acts_3 = model(x, y, neurons, T2, beta = -beta_2, criterion=criterion)
 
                 neurons_3 = copy(neurons)
 
@@ -473,24 +481,36 @@ def train(model, optimizer, train_loader, test_loader, T1, T2, betas, scale_feed
                     plot_lca_weights(model, path + 'lcaweights_epoch_' + str(epoch) + '.png')
 
         if model.finetune == True and model.pretrained == True: # Fine tune LCA weights with nudged, evolved state of activation layer once per epoch, not every batch like EP layers
-            acts_star = model.lca.transfer(neurons_2[0])
-            
             # Maybe I wan to run LCA dynamics once?
             # inhib = model.lca.lateral_competition(acts, connectivity)
             # states = states + (1 / model.lca.tau) * (input_drive - states - inhib)
-            recon = model.lca.compute_recon(acts_star, model.lca.weights) 
-            recon_error = model.lca.compute_recon_error(inputs_3,recon) # update = acts . recon_error
-            model.lca.update_weights(acts_3, recon_error)
+            
+            # Initial LCA activations
+            recon = model.lca.compute_recon(acts_2, model.lca.weights) 
+            recon_error = model.lca.compute_recon_error(inputs_2,recon) 
+            
+            # Settled, nudged activations
+            acts_star = model.lca.transfer(neurons_2[0])
+            recon_star = model.lca.compute_recon(acts_star, model.lca.weights) 
+            recon_error_star = model.lca.compute_recon_error(inputs_2,recon_star) # update = acts . recon_error
+            
+            model.lca.update_weights(acts_2, recon_error) # recon_update = acts . recon_error (normal LCA update)
+            model.lca.update_weights(acts_star, recon_error_star) # update = recon_update + (acts_star . recon_error_star) (nudged LCA update)
 
         elif model.finetune == True and model.pretrained == False: # Learn dictionary entirely during RCNN training
-            acts_star = model.lca.transfer(neurons_2[0])
+            recon = model.lca.compute_recon(acts_2, model.lca.weights) 
+            recon_error = model.lca.compute_recon_error(inputs_2,recon) 
             
             # Maybe I wan to run LCA dynamics once?
             # inhib = model.lca.lateral_competition(acts, connectivity)
             # states = states + (1 / model.lca.tau) * (input_drive - states - inhib)
-            recon = model.lca.compute_recon(acts_star, model.lca.weights) 
-            recon_error = model.lca.compute_recon_error(inputs_3,recon) # update = acts . recon_error
-            model.lca.update_weights(acts_3, recon_error)
+            acts_star = model.lca.transfer(neurons_2[0])
+            recon_star = model.lca.compute_recon(acts_star, model.lca.weights) 
+            recon_error_star = model.lca.compute_recon_error(inputs_3,recon_star) # update = acts . recon_error
+            
+            model.lca.update_weights(acts_2, recon_error)
+            model.lca.update_weights(acts_star, recon_error_star)
+            
             
 
         if scheduler is not None:
